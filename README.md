@@ -4,6 +4,14 @@ Bot Discord untuk generate QR Code QRIS dinamis, dengan konfigurasi QRIS per ser
 
 ---
 
+## Install bot
+
+Klik link berikut untuk invite bot ke server Discord:
+
+https://discord.com/oauth2/authorize?client_id=1511463323881701517&permissions=51200&integration_type=0&scope=bot+applications.commands
+
+---
+
 ## Perintah
 
 ### Generate QR (semua member)
