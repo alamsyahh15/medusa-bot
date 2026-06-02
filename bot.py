@@ -6,12 +6,15 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 import json
+import math
 
 # ─────────────────────────────────────────
 #  KONFIGURASI
 # ─────────────────────────────────────────
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 CONFIG_FILE = "config.json"
+ADMIN_FEE_RATE = 0.003        # 0.3%
+ADMIN_FEE_THRESHOLD = 500000  # hanya berlaku jika nominal > 500.000
 # ─────────────────────────────────────────
 
 
@@ -30,9 +33,13 @@ def save_config(config: dict):
 def get_guild_config(guild_id: int) -> dict | None:
     return load_config().get(str(guild_id))
 
-def set_guild_config(guild_id: int, qris: str, merchant: str):
+def set_guild_config(guild_id: int, qris: str, merchant: str, admin_fee: bool):
     config = load_config()
-    config[str(guild_id)] = {"static_qris": qris, "merchant_name": merchant}
+    config[str(guild_id)] = {
+        "static_qris": qris,
+        "merchant_name": merchant,
+        "activate_admin_fee": admin_fee,
+    }
     save_config(config)
 
 def delete_guild_config(guild_id: int):
@@ -61,6 +68,16 @@ def validate_qris(payload: str) -> bool:
         ("010211" in payload or "010212" in payload)
     )
 
+def apply_admin_fee(amount: int) -> int:
+    """
+    Jika nominal > 500.000, hitung subtotal dengan formula:
+    subtotal = floor(amount / (1 - 0.003))
+    Tujuan: pembeli menanggung admin fee 0.3% sehingga merchant tetap terima nominal asli.
+    """
+    if amount > ADMIN_FEE_THRESHOLD:
+        return math.floor(amount / (1 - ADMIN_FEE_RATE))
+    return amount
+
 def make_dynamic_qris(static: str, amount: int) -> str:
     payload = static.replace("010211", "010212")[:-4]
     amount_str = str(amount)
@@ -74,7 +91,12 @@ def make_dynamic_qris(static: str, amount: int) -> str:
 def format_rupiah(amount: int) -> str:
     return "Rp {:,.0f}".format(amount).replace(",", ".")
 
-def generate_qris_image(payload: str, amount: int, merchant_name: str) -> io.BytesIO:
+def generate_qris_image(payload: str, amount: int, merchant_name: str, original_amount: int = None) -> io.BytesIO:
+    """
+    Generate gambar QRIS card.
+    Jika original_amount berbeda dengan amount (admin fee aktif),
+    tampilkan breakdown harga di footer.
+    """
     qr = qrcode.QRCode(
         error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=10,
@@ -85,7 +107,11 @@ def generate_qris_image(payload: str, amount: int, merchant_name: str) -> io.Byt
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
     qr_size = qr_img.size[0]
 
-    padding, header_h, footer_h = 40, 90, 60
+    has_fee = original_amount is not None and original_amount != amount
+    padding  = 40
+    header_h = 90
+    footer_h = 80 if has_fee else 60
+
     card_w = qr_size + padding * 2
     card_h = qr_size + padding * 2 + header_h + footer_h
 
@@ -118,9 +144,16 @@ def generate_qris_image(payload: str, amount: int, merchant_name: str) -> io.Byt
     draw.rectangle([qr_x - 8, qr_y - 8, qr_x + qr_size + 8, qr_y + qr_size + 8], outline=(200, 200, 200), width=1)
     card.paste(qr_img, (qr_x, qr_y))
 
-    footer_y = qr_y + qr_size + 16
-    center_text(draw, "E-Wallet transaction cannot be refunded", load_font(14), footer_y, (120, 120, 120))
-    center_text(draw, "Code by MedusaBlox", load_font(14), footer_y + 20, (120, 120, 120))
+    footer_y = qr_y + qr_size + 14
+
+    if has_fee:
+        fee_amount = amount - original_amount
+        center_text(draw, f"Subtotal: {format_rupiah(original_amount)}  |  Admin fee (0.3%): {format_rupiah(fee_amount)}", load_font(12), footer_y, (100, 100, 100))
+        center_text(draw, "E-Wallet transaction cannot be refunded", load_font(13), footer_y + 18, (120, 120, 120))
+        center_text(draw, "Code by MedusaBlox", load_font(13), footer_y + 36, (120, 120, 120))
+    else:
+        center_text(draw, "E-Wallet transaction cannot be refunded", load_font(14), footer_y, (120, 120, 120))
+        center_text(draw, "Code by MedusaBlox", load_font(14), footer_y + 20, (120, 120, 120))
 
     buf = io.BytesIO()
     card.convert("RGB").save(buf, format="PNG")
@@ -138,7 +171,6 @@ class QRISBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Sync slash commands ke semua server
         await self.tree.sync()
         print("✅ Slash commands synced")
 
@@ -181,21 +213,39 @@ async def qris_prefix(ctx: commands.Context, amount_raw: str = None):
         await ctx.send("❌ Nominal melebihi batas maksimum (Rp 50.000.000).")
         return
 
+    # Hitung admin fee jika aktif
+    original_amount = amount
+    use_fee = guild_config.get("activate_admin_fee", False)
+    final_amount = apply_admin_fee(amount) if use_fee else amount
+
     async with ctx.typing():
         try:
-            dynamic_payload = make_dynamic_qris(guild_config["static_qris"], amount)
-            image_bytes = generate_qris_image(dynamic_payload, amount, guild_config["merchant_name"])
+            dynamic_payload = make_dynamic_qris(guild_config["static_qris"], final_amount)
+            image_bytes = generate_qris_image(
+                dynamic_payload,
+                final_amount,
+                guild_config["merchant_name"],
+                original_amount=original_amount if use_fee else None,
+            )
         except Exception as e:
             await ctx.send(f"❌ Gagal generate QR: {e}")
             return
 
-    file = discord.File(image_bytes, filename=f"qris_{amount}.png")
-    embed = discord.Embed(
-        title="💳 QRIS Payment",
-        description=f"Scan QR di bawah untuk membayar **{format_rupiah(amount)}**",
-        color=0x1A1F5E,
-    )
-    embed.set_image(url=f"attachment://qris_{amount}.png")
+    file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
+
+    # Deskripsi embed — tampilkan breakdown jika ada fee
+    if use_fee and final_amount != original_amount:
+        fee_amount = final_amount - original_amount
+        desc = (
+            f"Subtotal: **{format_rupiah(original_amount)}**\n"
+            f"Admin fee (0.3%): **{format_rupiah(fee_amount)}**\n"
+            f"Total bayar: **{format_rupiah(final_amount)}**"
+        )
+    else:
+        desc = f"Scan QR di bawah untuk membayar **{format_rupiah(final_amount)}**"
+
+    embed = discord.Embed(title="💳 QRIS Payment", description=desc, color=0x1A1F5E)
+    embed.set_image(url=f"attachment://qris_{final_amount}.png")
     embed.set_footer(text=f"E-Wallet transaction cannot be refunded • {guild_config['merchant_name']}")
     await ctx.send(file=file, embed=embed)
 
@@ -206,9 +256,15 @@ async def qris_prefix(ctx: commands.Context, amount_raw: str = None):
 @app_commands.describe(
     static_payload="Payload QRIS statis dari QR merchant kamu",
     merchant_name="Nama merchant yang tampil di QR (contoh: Toko Budi)",
+    activate_admin_fee="Aktifkan admin fee 0.3% untuk nominal > Rp 500.000 (default: False)",
 )
 @app_commands.default_permissions(administrator=True)
-async def qris_setup(interaction: discord.Interaction, static_payload: str, merchant_name: str):
+async def qris_setup(
+    interaction: discord.Interaction,
+    static_payload: str,
+    merchant_name: str,
+    activate_admin_fee: bool = False,
+):
     await interaction.response.defer(ephemeral=True)
 
     if not validate_qris(static_payload):
@@ -226,11 +282,14 @@ async def qris_setup(interaction: discord.Interaction, static_payload: str, merc
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
-    set_guild_config(interaction.guild.id, static_payload, merchant_name)
+    set_guild_config(interaction.guild.id, static_payload, merchant_name, activate_admin_fee)
+
+    fee_status = "✅ Aktif (nominal > Rp 500.000 dikenakan +0.3%)" if activate_admin_fee else "❌ Tidak aktif"
 
     embed = discord.Embed(title="✅ QRIS berhasil dikonfigurasi!", color=0x2ECC71)
     embed.add_field(name="Merchant", value=merchant_name, inline=False)
     embed.add_field(name="Payload (preview)", value=f"`{static_payload[:50]}...`", inline=False)
+    embed.add_field(name="Admin Fee", value=fee_status, inline=False)
     embed.add_field(name="Test sekarang", value="`!qris 10000`", inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -240,7 +299,6 @@ async def qris_setup(interaction: discord.Interaction, static_payload: str, merc
 @bot.tree.command(name="qrisinfo", description="Lihat konfigurasi QRIS server ini")
 async def qris_info(interaction: discord.Interaction):
     guild_config = get_guild_config(interaction.guild.id)
-
     if not guild_config:
         embed = discord.Embed(
             title="⚙️ Belum ada konfigurasi QRIS",
@@ -250,9 +308,12 @@ async def qris_info(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
+    fee_status = "✅ Aktif (nominal > Rp 500.000 dikenakan +0.3%)" if guild_config.get("activate_admin_fee") else "❌ Tidak aktif"
+
     embed = discord.Embed(title="📋 Konfigurasi QRIS Server", color=0x1A1F5E)
     embed.add_field(name="Merchant", value=guild_config["merchant_name"], inline=False)
     embed.add_field(name="Payload (preview)", value=f"`{guild_config['static_qris'][:50]}...`", inline=False)
+    embed.add_field(name="Admin Fee", value=fee_status, inline=False)
     embed.add_field(name="Status", value="✅ Aktif", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -262,11 +323,9 @@ async def qris_info(interaction: discord.Interaction):
 @bot.tree.command(name="qrisreset", description="Hapus konfigurasi QRIS server ini (Admin only)")
 @app_commands.default_permissions(administrator=True)
 async def qris_reset(interaction: discord.Interaction):
-    guild_config = get_guild_config(interaction.guild.id)
-    if not guild_config:
+    if not get_guild_config(interaction.guild.id):
         await interaction.response.send_message("⚠️ Server ini belum memiliki konfigurasi QRIS.", ephemeral=True)
         return
-
     delete_guild_config(interaction.guild.id)
     embed = discord.Embed(
         title="🗑️ Konfigurasi QRIS dihapus",
