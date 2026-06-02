@@ -116,14 +116,14 @@ async def on_ready():
 
 @bot.command(name="pay")
 async def pay(ctx: commands.Context, amount_raw: str = None):
-    """Generate QRIS dinamis. Contoh: !pay 26000"""
+    """Generate QRIS dinamis. Contoh: !qris 26000"""
     if amount_raw is None:
-        await ctx.send("❌ Format salah. Contoh: `!pay 26000`")
+        await ctx.send("❌ Format salah. Contoh: `!qris 26000`")
         return
 
     cleaned = amount_raw.replace(".", "").replace(",", "").replace(" ", "")
     if not cleaned.isdigit():
-        await ctx.send("❌ Nominal tidak valid. Gunakan angka, misal: `!pay 26000`")
+        await ctx.send("❌ Nominal tidak valid. Gunakan angka, misal: `!qris 26000`")
         return
 
     amount = int(cleaned)
@@ -158,9 +158,9 @@ async def qris_help(ctx: commands.Context):
     """Tampilkan bantuan."""
     embed = discord.Embed(title="📖 QRIS Bot — Bantuan", color=0x1A1F5E)
     embed.add_field(
-        name="!pay <nominal>",
+        name="!qris <nominal>",
         value="Generate QRIS dinamis dengan nominal tertentu.\n"
-              "Contoh:\n`!pay 26000`\n`!pay 150000`\n`!pay 1.500.000`",
+              "Contoh:\n`!qris 26000`\n`!qris 150000`\n`!qris 1.500.000`",
         inline=False,
     )
     embed.add_field(name="!qrishelp", value="Tampilkan pesan bantuan ini.", inline=False)
