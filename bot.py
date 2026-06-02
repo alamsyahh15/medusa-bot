@@ -114,7 +114,7 @@ async def on_ready():
     print(f"✅ Bot aktif sebagai {bot.user} (ID: {bot.user.id})")
 
 
-@bot.command(name="pay")
+@bot.command(name="qris")
 async def pay(ctx: commands.Context, amount_raw: str = None):
     """Generate QRIS dinamis. Contoh: !qris 26000"""
     if amount_raw is None:
