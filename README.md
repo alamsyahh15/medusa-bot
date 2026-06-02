@@ -4,14 +4,6 @@ Bot Discord untuk generate QR Code QRIS dinamis, dengan konfigurasi QRIS per ser
 
 ---
 
-## Install bot
-
-Klik link berikut untuk invite bot ke server Discord:
-
-https://discord.com/oauth2/authorize?client_id=1511463323881701517&permissions=51200&integration_type=0&scope=bot+applications.commands
-
----
-
 ## Perintah
 
 ### Generate QR (semua member)
@@ -38,13 +30,36 @@ https://discord.com/oauth2/authorize?client_id=1511463323881701517&permissions=5
 ## Cara setup QRIS di server baru
 
 1. Admin ketik `/qrissetup` di Discord
-2. Isi 2 field yang muncul:
+2. Isi 3 field yang muncul:
    - **static_payload** — payload QRIS statis dari QR merchant
    - **merchant_name** — nama yang tampil di QR (contoh: `Toko Budi`)
+   - **activate_admin_fee** — `True` / `False` (default: `False`)
 3. Test: `!qris 26000`
 
 ### Cara dapat static QRIS payload
 Scan QR statis merchant menggunakan QR scanner yang menampilkan teks hasil scan (misal ZXing, QR & Barcode Scanner). Salin teks yang muncul — itulah static payload-nya.
+
+---
+
+## Admin Fee
+
+Jika `activate_admin_fee` diset `True`, bot akan menambahkan fee **0.3%** untuk transaksi dengan nominal **> Rp 500.000**.
+
+**Formula:** `total = floor(nominal / (1 - 0.003))`
+
+| Nominal | Admin Fee | Total Bayar |
+|---|---|---|
+| Rp 26.000 | ❌ (di bawah threshold) | Rp 26.000 |
+| Rp 500.000 | ❌ (tepat di threshold) | Rp 500.000 |
+| Rp 500.001 | ✅ +0.3% | Rp 501.502 |
+| Rp 1.000.000 | ✅ +0.3% | Rp 1.003.010 |
+
+Jika fee aktif, embed dan gambar QR akan menampilkan breakdown:
+```
+Subtotal:         Rp 500.001
+Admin fee (0.3%): Rp 1.501
+Total bayar:      Rp 501.502
+```
 
 ---
 
@@ -55,11 +70,10 @@ qris-bot/
 ├── bot.py              # Kode utama bot
 ├── requirements.txt    # Library Python
 ├── qris-bot.service    # File systemd untuk VPS
-├── config.json         # Konfigurasi QRIS per server (auto-generated)
+├── .gitignore
+├── config.json         # Konfigurasi QRIS per server (auto-generated, tidak di-commit)
 └── README.md
 ```
-
-> `config.json` dibuat otomatis saat pertama kali `/qrissetup` dijalankan. Jangan di-commit ke GitHub karena berisi data server.
 
 ---
 
@@ -121,7 +135,7 @@ git pull
 systemctl restart qris-bot
 ```
 
-> Setelah restart, slash commands butuh beberapa menit untuk muncul di Discord karena perlu sync.
+> Setelah restart, tunggu 1-2 menit lalu refresh Discord agar slash commands ter-sync.
 
 ---
 
@@ -136,19 +150,5 @@ journalctl -u qris-bot -f       # Lihat log real-time
 
 ---
 
-## .gitignore (recommended)
-
-Buat file `.gitignore` di repo agar token dan config tidak ter-commit:
-
-```
-config.json
-.env
-__pycache__/
-*.pyc
-venv/
-```
-
----
-
 > ⚠️ Jangan pernah commit `DISCORD_TOKEN` ke GitHub.
-> Simpan token hanya di file systemd service di VPS.
+> `config.json` dibuat otomatis dan sudah di-exclude via `.gitignore`.
