@@ -171,8 +171,14 @@ class QRISBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        import aiohttp
+        self.http_session = aiohttp.ClientSession()
         await self.tree.sync()
         print("✅ Slash commands synced")
+
+    async def close(self):
+        await self.http_session.close()
+        await super().close()
 
     async def on_ready(self):
         print(f"✅ Bot aktif sebagai {self.user} (ID: {self.user.id})")
@@ -366,3 +372,175 @@ if __name__ == "__main__":
         print("   Jalankan dengan: DISCORD_TOKEN=xxx python bot.py")
     else:
         bot.run(DISCORD_TOKEN)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  LEADERBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+
+LEADERBOARD_API = "https://medusablox.com/api/roblox/external/leaderboard"
+
+RANK_COLORS = [
+    (212, 175, 55),   # Gold
+    (180, 180, 195),  # Silver
+    (180, 120, 60),   # Bronze
+]
+RANK_LABELS = ["Top 1", "Top 2", "Top 3"]
+
+
+def generate_leaderboard_image(players: list) -> io.BytesIO:
+    """Render gambar leaderboard dari data API."""
+
+    def load_font(size, bold=False):
+        candidates = (
+            ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+            if bold else
+            ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+        )
+        for p in candidates:
+            if os.path.exists(p):
+                try:
+                    return ImageFont.truetype(p, size)
+                except Exception:
+                    pass
+        return ImageFont.load_default()
+
+    def rounded_rect(draw, xy, radius, fill, outline=None, width=1):
+        x1, y1, x2, y2 = xy
+        draw.rectangle([x1+radius, y1, x2-radius, y2], fill=fill)
+        draw.rectangle([x1, y1+radius, x2, y2-radius], fill=fill)
+        for cx, cy in [(x1,y1),(x2-2*radius,y1),(x1,y2-2*radius),(x2-2*radius,y2-2*radius)]:
+            draw.ellipse([cx, cy, cx+2*radius, cy+2*radius], fill=fill)
+        if outline:
+            draw.arc([x1, y1, x1+2*radius, y1+2*radius], 180, 270, fill=outline, width=width)
+            draw.arc([x2-2*radius, y1, x2, y1+2*radius], 270, 360, fill=outline, width=width)
+            draw.arc([x1, y2-2*radius, x1+2*radius, y2], 90, 180, fill=outline, width=width)
+            draw.arc([x2-2*radius, y2-2*radius, x2, y2], 0, 90, fill=outline, width=width)
+            draw.line([x1+radius, y1, x2-radius, y1], fill=outline, width=width)
+            draw.line([x1+radius, y2, x2-radius, y2], fill=outline, width=width)
+            draw.line([x1, y1+radius, x1, y2-radius], fill=outline, width=width)
+            draw.line([x2, y1+radius, x2, y2-radius], fill=outline, width=width)
+
+    W       = 480
+    HEADER  = 110
+    ROW_H   = 90
+    PAD     = 20
+    GAP     = 10
+    H       = HEADER + len(players) * (ROW_H + GAP) + PAD
+
+    BG          = (28, 22, 17)
+    CARD_BG     = (45, 35, 25)
+    CARD_BORDER = (80, 60, 35)
+    WHITE       = (255, 255, 255)
+    GREY        = (160, 150, 140)
+    ACCENT      = (160, 100, 220)
+
+    img  = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+
+    def cx_text(text, font, y, color):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        x = (W - (bbox[2] - bbox[0])) // 2
+        draw.text((x, y), text, fill=color, font=font)
+
+    # Header
+    cx_text("L E A D E R B O A R D", load_font(13), 18, GREY)
+    cx_text("Top 3 Buyer Robux", load_font(28, bold=True), 40, WHITE)
+    cx_text("Ranking dihitung dari total akumulasi Robux", load_font(13), 78, GREY)
+    cx_text("per username yang telah dibeli.", load_font(13), 96, GREY)
+
+    for i, p in enumerate(players[:3]):
+        rank_color = RANK_COLORS[i]
+        cy  = HEADER + i * (ROW_H + GAP)
+        cx1 = PAD
+        cx2 = W - PAD
+
+        rounded_rect(draw, [cx1, cy, cx2, cy+ROW_H], 12, CARD_BG, outline=CARD_BORDER, width=1)
+        draw.rectangle([cx1, cy+12, cx1+4, cy+ROW_H-12], fill=rank_color)
+
+        # Avatar circle + initial
+        av_x, av_y = cx1+52, cy+ROW_H//2
+        draw.ellipse([av_x-24, av_y-24, av_x+24, av_y+24], fill=(60,50,40), outline=rank_color, width=2)
+        initial = p["username"][0].upper()
+        f20b = load_font(20, bold=True)
+        bbox = draw.textbbox((0, 0), initial, font=f20b)
+        draw.text((av_x-(bbox[2]-bbox[0])//2, av_y-(bbox[3]-bbox[1])//2-2), initial, fill=rank_color, font=f20b)
+
+        # Username
+        draw.text((cx1+90, cy+18), p["username"], fill=WHITE, font=load_font(20, bold=True))
+
+        # Rank badge
+        badge  = RANK_LABELS[i]
+        bx, by = cx1+90, cy+48
+        bbox   = draw.textbbox((0, 0), badge, font=load_font(11))
+        bw, bh = bbox[2]-bbox[0]+14, bbox[3]-bbox[1]+6
+        rounded_rect(draw, [bx, by, bx+bw, by+bh], 6, fill=(60, 45, 20))
+        draw.text((bx+7, by+3), badge, fill=rank_color, font=load_font(11))
+
+        # Robux value
+        val = f"{p['total_robux']:,}".replace(",", ".")
+        draw.text((cx2-120, cy+14), "TOTAL", fill=GREY, font=load_font(11))
+        f24b = load_font(24, bold=True)
+        bbox = draw.textbbox((0, 0), val, font=f24b)
+        draw.text((cx2-10-(bbox[2]-bbox[0]), cy+28), val, fill=ACCENT, font=f24b)
+        draw.text((cx2-52, cy+58), "Robux", fill=GREY, font=load_font(12))
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+# ── Prefix command: !leaderboard ──────────────────────────────────────────────
+
+@bot.command(name="leaderboard", aliases=["lb", "top"])
+async def leaderboard(ctx: commands.Context):
+    """Tampilkan Top 3 Buyer Robux. Contoh: !leaderboard"""
+    async with ctx.typing():
+        try:
+            async with bot.http_session.get(LEADERBOARD_API) as resp:
+                if resp.status != 200:
+                    await ctx.send(f"❌ Gagal fetch data leaderboard (HTTP {resp.status})")
+                    return
+                data = await resp.json()
+
+            if not data.get("success") or not data.get("data"):
+                await ctx.send("❌ Data leaderboard kosong atau tidak valid.")
+                return
+
+            players = data["data"]
+            image_bytes = generate_leaderboard_image(players)
+
+        except Exception as e:
+            await ctx.send(f"❌ Error: {e}")
+            return
+
+    file = discord.File(image_bytes, filename="leaderboard.png")
+    await ctx.send(file=file)
+
+
+# ── Slash command: /leaderboard ────────────────────────────────────────────────
+
+@bot.tree.command(name="leaderboard", description="Tampilkan Top 3 Buyer Robux")
+async def leaderboard_slash(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        async with bot.http_session.get(LEADERBOARD_API) as resp:
+            if resp.status != 200:
+                await interaction.followup.send(f"❌ Gagal fetch data leaderboard (HTTP {resp.status})")
+                return
+            data = await resp.json()
+
+        if not data.get("success") or not data.get("data"):
+            await interaction.followup.send("❌ Data leaderboard kosong atau tidak valid.")
+            return
+
+        players = data["data"]
+        image_bytes = generate_leaderboard_image(players)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {e}")
+        return
+
+    file = discord.File(image_bytes, filename="leaderboard.png")
+    await interaction.followup.send(file=file)
