@@ -292,12 +292,6 @@ class QRISBot(commands.Bot):
             await self.http_session.close()
         await super().close()
 
-    async def on_ready(self):
-        print(f"✅ Bot aktif sebagai {self.user} (ID: {self.user.id})")
-        print(f"   Terhubung ke {len(self.guilds)} server")
-        if not leaderboard_scheduler.is_running():
-            print("✅ Leaderboard scheduler aktif")
-
 bot = QRISBot()
 
 
@@ -314,6 +308,15 @@ async def leaderboard_scheduler():
 async def before_scheduler():
     await bot.wait_until_ready()
     print("✅ Leaderboard scheduler aktif (setiap 5 menit)")
+
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot aktif sebagai {bot.user} (ID: {bot.user.id})")
+    print(f"   Terhubung ke {len(bot.guilds)} server")
+    if not leaderboard_scheduler.is_running():
+        leaderboard_scheduler.start()
+        print("✅ Leaderboard scheduler dimulai")
 
 
 # ── !qris ──────────────────────────────────────────────────────────────────────
