@@ -296,7 +296,6 @@ class QRISBot(commands.Bot):
         print(f"✅ Bot aktif sebagai {self.user} (ID: {self.user.id})")
         print(f"   Terhubung ke {len(self.guilds)} server")
         if not leaderboard_scheduler.is_running():
-            leaderboard_scheduler.start()
             print("✅ Leaderboard scheduler aktif")
 
 bot = QRISBot()
@@ -489,7 +488,6 @@ async def on_command_error(ctx, error):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    leaderboard_scheduler.start()
     if not DISCORD_TOKEN:
         print("❌ DISCORD_TOKEN belum diset!")
     else:
