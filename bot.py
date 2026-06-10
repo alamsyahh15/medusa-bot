@@ -295,6 +295,9 @@ class QRISBot(commands.Bot):
     async def on_ready(self):
         print(f"✅ Bot aktif sebagai {self.user} (ID: {self.user.id})")
         print(f"   Terhubung ke {len(self.guilds)} server")
+        if not leaderboard_scheduler.is_running():
+            leaderboard_scheduler.start()
+            print("✅ Leaderboard scheduler aktif")
 
 bot = QRISBot()
 
