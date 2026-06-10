@@ -200,9 +200,6 @@ class QRISBot(commands.Bot):
     async def on_ready(self):
         print(f"✅ Bot aktif sebagai {self.user} (ID: {self.user.id})")
         print(f"   Terhubung ke {len(self.guilds)} server")
-        if not leaderboard_scheduler.is_running():
-            leaderboard_scheduler.start()
-            print("✅ Leaderboard scheduler aktif (setiap 5 menit)")
 
 bot = QRISBot()
 
@@ -382,6 +379,15 @@ async def on_command_error(ctx, error):
         await ctx.send("❌ Kamu tidak punya izin untuk perintah ini. (Admin only)")
     elif isinstance(error, commands.CommandNotFound):
         pass
+
+
+# ── Start scheduler ───────────────────────────────────────────────────────────
+
+@bot.event
+async def on_connect():
+    if not leaderboard_scheduler.is_running():
+        leaderboard_scheduler.start()
+        print("✅ Leaderboard scheduler aktif (setiap 5 menit)")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
