@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
@@ -47,6 +47,23 @@ def delete_guild_config(guild_id: int):
     if str(guild_id) in config:
         del config[str(guild_id)]
         save_config(config)
+
+def set_leaderboard_config(guild_id: int, channel_id: int, message_id: int = None):
+    config = load_config()
+    if str(guild_id) not in config:
+        config[str(guild_id)] = {}
+    config[str(guild_id)]["lb_channel_id"] = channel_id
+    if message_id:
+        config[str(guild_id)]["lb_message_id"] = message_id
+    save_config(config)
+
+def get_leaderboard_config(guild_id: int) -> dict | None:
+    cfg = load_config().get(str(guild_id), {})
+    channel_id = cfg.get("lb_channel_id")
+    message_id = cfg.get("lb_message_id")
+    if not channel_id:
+        return None
+    return {"channel_id": channel_id, "message_id": message_id}
 
 
 # ── QRIS helpers ───────────────────────────────────────────────────────────────
@@ -174,6 +191,7 @@ class QRISBot(commands.Bot):
         import aiohttp
         self.http_session = aiohttp.ClientSession()
         await self.tree.sync()
+        leaderboard_scheduler.start()
         print("✅ Slash commands synced")
 
     async def close(self):
@@ -380,6 +398,72 @@ if __name__ == "__main__":
 
 LEADERBOARD_API = "https://medusablox.com/api/roblox/external/leaderboard"
 
+
+async def fetch_and_render_leaderboard(bot) -> io.BytesIO | None:
+    """Fetch API dan render gambar. Return None jika gagal."""
+    try:
+        async with bot.http_session.get(LEADERBOARD_API) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+        if not data.get("success") or not data.get("data"):
+            return None
+        return generate_leaderboard_image(data["data"])
+    except Exception as e:
+        print(f"[Leaderboard] Fetch error: {e}")
+        return None
+
+
+async def post_or_edit_leaderboard(bot, guild_id: int):
+    """
+    Kirim atau edit pesan leaderboard di channel yang sudah di-set.
+    - Jika belum ada pesan → kirim baru, simpan message_id
+    - Jika sudah ada pesan → edit gambarnya
+    """
+    lb_cfg = get_leaderboard_config(guild_id)
+    if not lb_cfg:
+        return
+
+    channel = bot.get_channel(lb_cfg["channel_id"])
+    if not channel:
+        return
+
+    image_bytes = await fetch_and_render_leaderboard(bot)
+    if not image_bytes:
+        return
+
+    # Coba edit pesan lama
+    if lb_cfg.get("message_id"):
+        try:
+            msg = await channel.fetch_message(lb_cfg["message_id"])
+            image_bytes2 = await fetch_and_render_leaderboard(bot)
+            await msg.edit(attachments=[discord.File(image_bytes2, filename="leaderboard.png")])
+            print(f"[Leaderboard] Edited message di guild {guild_id}")
+            return
+        except discord.NotFound:
+            pass  # Pesan sudah dihapus, kirim baru
+        except Exception as e:
+            print(f"[Leaderboard] Edit error: {e}")
+
+    # Kirim pesan baru
+    file = discord.File(image_bytes, filename="leaderboard.png")
+    msg = await channel.send(file=file)
+    set_leaderboard_config(guild_id, lb_cfg["channel_id"], msg.id)
+    print(f"[Leaderboard] Sent new message di guild {guild_id}")
+
+
+@tasks.loop(minutes=5)
+async def leaderboard_scheduler():
+    """Auto-update leaderboard setiap 5 menit untuk semua guild yang sudah set channel."""
+    config = load_config()
+    for guild_id_str, cfg in config.items():
+        if cfg.get("lb_channel_id"):
+            await post_or_edit_leaderboard(bot, int(guild_id_str))
+
+@leaderboard_scheduler.before_loop
+async def before_scheduler():
+    await bot.wait_until_ready()
+
 RANK_COLORS = [
     (212, 175, 55),   # Gold
     (180, 180, 195),  # Silver
@@ -491,56 +575,65 @@ def generate_leaderboard_image(players: list) -> io.BytesIO:
     return buf
 
 
-# ── Prefix command: !leaderboard ──────────────────────────────────────────────
+# ── Slash command: /leaderboardset ────────────────────────────────────────────
 
-@bot.command(name="leaderboard", aliases=["lb", "top"])
-async def leaderboard(ctx: commands.Context):
-    """Tampilkan Top 3 Buyer Robux. Contoh: !leaderboard"""
-    async with ctx.typing():
-        try:
-            async with bot.http_session.get(LEADERBOARD_API) as resp:
-                if resp.status != 200:
-                    await ctx.send(f"❌ Gagal fetch data leaderboard (HTTP {resp.status})")
-                    return
-                data = await resp.json()
+@bot.tree.command(name="leaderboardset", description="Set channel untuk auto-update leaderboard (Admin only)")
+@app_commands.describe(channel="Channel tujuan leaderboard")
+@app_commands.default_permissions(administrator=True)
+async def leaderboard_set(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
 
-            if not data.get("success") or not data.get("data"):
-                await ctx.send("❌ Data leaderboard kosong atau tidak valid.")
-                return
+    # Simpan channel, reset message_id agar kirim pesan baru
+    set_leaderboard_config(interaction.guild.id, channel.id, None)
 
-            players = data["data"]
-            image_bytes = generate_leaderboard_image(players)
-
-        except Exception as e:
-            await ctx.send(f"❌ Error: {e}")
-            return
-
-    file = discord.File(image_bytes, filename="leaderboard.png")
-    await ctx.send(file=file)
-
-
-# ── Slash command: /leaderboard ────────────────────────────────────────────────
-
-@bot.tree.command(name="leaderboard", description="Tampilkan Top 3 Buyer Robux")
-async def leaderboard_slash(interaction: discord.Interaction):
-    await interaction.response.defer()
-    try:
-        async with bot.http_session.get(LEADERBOARD_API) as resp:
-            if resp.status != 200:
-                await interaction.followup.send(f"❌ Gagal fetch data leaderboard (HTTP {resp.status})")
-                return
-            data = await resp.json()
-
-        if not data.get("success") or not data.get("data"):
-            await interaction.followup.send("❌ Data leaderboard kosong atau tidak valid.")
-            return
-
-        players = data["data"]
-        image_bytes = generate_leaderboard_image(players)
-
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error: {e}")
+    # Langsung kirim leaderboard pertama
+    image_bytes = await fetch_and_render_leaderboard(bot)
+    if not image_bytes:
+        await interaction.followup.send("❌ Gagal fetch data leaderboard. Channel sudah disimpan, akan dicoba lagi dalam 5 menit.", ephemeral=True)
         return
 
     file = discord.File(image_bytes, filename="leaderboard.png")
-    await interaction.followup.send(file=file)
+    msg = await channel.send(file=file)
+    set_leaderboard_config(interaction.guild.id, channel.id, msg.id)
+
+    embed = discord.Embed(title="✅ Leaderboard channel berhasil diset!", color=0x2ECC71)
+    embed.add_field(name="Channel", value=channel.mention, inline=False)
+    embed.add_field(name="Auto-update", value="Setiap 5 menit", inline=False)
+    embed.add_field(name="Manual update", value="`/leaderboard-update`", inline=False)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ── Slash command: /leaderboard-update ────────────────────────────────────────
+
+@bot.tree.command(name="leaderboard-update", description="Update leaderboard sekarang (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def leaderboard_update(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    lb_cfg = get_leaderboard_config(interaction.guild.id)
+    if not lb_cfg:
+        await interaction.followup.send(
+            "❌ Channel leaderboard belum diset. Gunakan `/leaderboardset` dulu.",
+            ephemeral=True
+        )
+        return
+
+    await post_or_edit_leaderboard(bot, interaction.guild.id)
+
+    channel = bot.get_channel(lb_cfg["channel_id"])
+    embed = discord.Embed(title="✅ Leaderboard berhasil diupdate!", color=0x2ECC71)
+    embed.add_field(name="Channel", value=channel.mention if channel else str(lb_cfg["channel_id"]), inline=False)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ── Prefix command: !leaderboard ──────────────────────────────────────────────
+
+@bot.command(name="leaderboard", aliases=["lb", "top"])
+async def leaderboard_prefix(ctx: commands.Context):
+    """Tampilkan leaderboard sekarang di channel ini."""
+    async with ctx.typing():
+        image_bytes = await fetch_and_render_leaderboard(bot)
+        if not image_bytes:
+            await ctx.send("❌ Gagal fetch data leaderboard.")
+            return
+    await ctx.send(file=discord.File(image_bytes, filename="leaderboard.png"))
