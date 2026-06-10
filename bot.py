@@ -191,7 +191,6 @@ class QRISBot(commands.Bot):
         import aiohttp
         self.http_session = aiohttp.ClientSession()
         await self.tree.sync()
-        leaderboard_scheduler.start()
         print("✅ Slash commands synced")
 
     async def close(self):
@@ -201,6 +200,9 @@ class QRISBot(commands.Bot):
     async def on_ready(self):
         print(f"✅ Bot aktif sebagai {self.user} (ID: {self.user.id})")
         print(f"   Terhubung ke {len(self.guilds)} server")
+        if not leaderboard_scheduler.is_running():
+            leaderboard_scheduler.start()
+            print("✅ Leaderboard scheduler aktif (setiap 5 menit)")
 
 bot = QRISBot()
 
