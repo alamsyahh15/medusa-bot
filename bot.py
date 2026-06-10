@@ -284,8 +284,11 @@ class QRISBot(commands.Bot):
 
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
-        await self.tree.sync()
-        print("✅ Slash commands synced")
+        try:
+            synced = await self.tree.sync()
+            print(f"✅ Slash commands synced: {len(synced)} commands")
+        except Exception as e:
+            print(f"❌ Sync error: {e}")
 
     async def close(self):
         if self.http_session:
