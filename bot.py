@@ -14,8 +14,7 @@ import aiohttp
 # ─────────────────────────────────────────
 DISCORD_TOKEN     = os.getenv("DISCORD_TOKEN", "")
 CONFIG_FILE       = "config.json"
-ADMIN_FEE_RATE    = 0.003
-ADMIN_FEE_THRESHOLD = 500000
+ADMIN_FEE_RATE    = 0.005
 LEADERBOARD_API   = "https://medusablox.com/api/roblox/external/leaderboard"
 # ─────────────────────────────────────────
 
@@ -35,12 +34,11 @@ def save_config(config: dict):
 def get_guild_config(guild_id: int) -> dict | None:
     return load_config().get(str(guild_id))
 
-def set_guild_config(guild_id: int, qris: str, merchant: str, admin_fee: bool):
+def set_guild_config(guild_id: int, qris: str, merchant: str):
     config = load_config()
     config[str(guild_id)] = {
         "static_qris": qris,
         "merchant_name": merchant,
-        "activate_admin_fee": admin_fee,
     }
     save_config(config)
 
@@ -87,9 +85,8 @@ def validate_qris(payload: str) -> bool:
     )
 
 def apply_admin_fee(amount: int) -> int:
-    if amount > ADMIN_FEE_THRESHOLD:
-        return math.floor(amount / (1 - ADMIN_FEE_RATE))
-    return amount
+    fee_amount = math.ceil(amount * ADMIN_FEE_RATE)
+    return amount + fee_amount
 
 def make_dynamic_qris(static: str, amount: int) -> str:
     payload = static.replace("010211", "010212")[:-4]
@@ -152,7 +149,7 @@ def generate_qris_image(payload: str, amount: int, merchant_name: str, original_
     footer_y = qr_y + qr_size + 14
     if has_fee:
         fee_amount = amount - original_amount
-        center_text(f"Subtotal: {format_rupiah(original_amount)}  |  Admin fee (0.3%): {format_rupiah(fee_amount)}", _load_font(12), footer_y, (100, 100, 100))
+        center_text(f"Subtotal: {format_rupiah(original_amount)}  |  Biaya admin (0.5%): {format_rupiah(fee_amount)}", _load_font(12), footer_y, (100, 100, 100))
         center_text("E-Wallet transaction cannot be refunded", _load_font(13), footer_y + 18, (120, 120, 120))
         center_text("Code by MedusaBlox", _load_font(13), footer_y + 36, (120, 120, 120))
     else:
@@ -342,22 +339,18 @@ async def qris_prefix(ctx: commands.Context, amount_raw: str = None):
         await ctx.send("❌ Melebihi batas maksimum Rp 50.000.000."); return
 
     original_amount = amount
-    use_fee = guild_config.get("activate_admin_fee", False)
-    final_amount = apply_admin_fee(amount) if use_fee else amount
+    final_amount = apply_admin_fee(amount)
 
     async with ctx.typing():
         try:
             payload = make_dynamic_qris(guild_config["static_qris"], final_amount)
             image_bytes = generate_qris_image(payload, final_amount, guild_config["merchant_name"],
-                                              original_amount=original_amount if use_fee else None)
+                                              original_amount=original_amount)
         except Exception as e:
             await ctx.send(f"❌ Gagal generate QR: {e}"); return
 
-    if use_fee and final_amount != original_amount:
-        fee_amount = final_amount - original_amount
-        desc = f"Subtotal: **{format_rupiah(original_amount)}**\nAdmin fee (0.3%): **{format_rupiah(fee_amount)}**\nTotal bayar: **{format_rupiah(final_amount)}**"
-    else:
-        desc = f"Scan QR di bawah untuk membayar **{format_rupiah(final_amount)}**"
+    fee_amount = final_amount - original_amount
+    desc = f"Subtotal: **{format_rupiah(original_amount)}**\nBiaya admin (0.5%): **{format_rupiah(fee_amount)}**\nTotal bayar: **{format_rupiah(final_amount)}**"
 
     file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
     embed = discord.Embed(title="💳 QRIS Payment", description=desc, color=0x1A1F5E)
@@ -383,20 +376,19 @@ async def leaderboard_prefix(ctx: commands.Context):
 @app_commands.describe(
     static_payload="Payload QRIS statis dari QR merchant kamu",
     merchant_name="Nama merchant yang tampil di QR",
-    activate_admin_fee="Aktifkan admin fee 0.3% untuk nominal > Rp 500.000 (default: False)",
 )
 @app_commands.default_permissions(administrator=True)
-async def qris_setup(interaction: discord.Interaction, static_payload: str, merchant_name: str, activate_admin_fee: bool = False):
+async def qris_setup(interaction: discord.Interaction, static_payload: str, merchant_name: str):
     await interaction.response.defer(ephemeral=True)
     if not validate_qris(static_payload):
         await interaction.followup.send(embed=discord.Embed(title="❌ Payload tidak valid", description="Pastikan payload dimulai `000201`, mengandung `5802ID`, dan merupakan QRIS statis (`010211`).", color=0xE74C3C), ephemeral=True)
         return
-    set_guild_config(interaction.guild.id, static_payload, merchant_name, activate_admin_fee)
-    fee_status = "✅ Aktif (nominal > Rp 500.000 dikenakan +0.3%)" if activate_admin_fee else "❌ Tidak aktif"
+    set_guild_config(interaction.guild.id, static_payload, merchant_name)
+    fee_status = "✅ Aktif untuk semua nominal (+0.5%)"
     embed = discord.Embed(title="✅ QRIS berhasil dikonfigurasi!", color=0x2ECC71)
     embed.add_field(name="Merchant", value=merchant_name, inline=False)
     embed.add_field(name="Payload (preview)", value=f"`{static_payload[:50]}...`", inline=False)
-    embed.add_field(name="Admin Fee", value=fee_status, inline=False)
+    embed.add_field(name="Biaya Admin", value=fee_status, inline=False)
     embed.add_field(name="Test sekarang", value="`!qris 10000`", inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -409,11 +401,11 @@ async def qris_info(interaction: discord.Interaction):
     if not cfg:
         await interaction.response.send_message(embed=discord.Embed(title="⚙️ Belum ada konfigurasi QRIS", description="Admin gunakan `/qrissetup`.", color=0xE67E22), ephemeral=True)
         return
-    fee_status = "✅ Aktif (nominal > Rp 500.000 dikenakan +0.3%)" if cfg.get("activate_admin_fee") else "❌ Tidak aktif"
+    fee_status = "✅ Aktif untuk semua nominal (+0.5%)"
     embed = discord.Embed(title="📋 Konfigurasi QRIS Server", color=0x1A1F5E)
     embed.add_field(name="Merchant", value=cfg["merchant_name"], inline=False)
     embed.add_field(name="Payload (preview)", value=f"`{cfg['static_qris'][:50]}...`", inline=False)
-    embed.add_field(name="Admin Fee", value=fee_status, inline=False)
+    embed.add_field(name="Biaya Admin", value=fee_status, inline=False)
     embed.add_field(name="Status", value="✅ Aktif", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
