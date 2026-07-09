@@ -8,6 +8,7 @@ import os
 import json
 import math
 import aiohttp
+from typing import Optional
 
 # ─────────────────────────────────────────
 #  KONFIGURASI
@@ -16,6 +17,16 @@ DISCORD_TOKEN     = os.getenv("DISCORD_TOKEN", "")
 CONFIG_FILE       = "config.json"
 ADMIN_FEE_RATE    = 0.005
 LEADERBOARD_API   = "https://medusablox.com/api/roblox/external/leaderboard"
+CALC_RATES = {
+    "group": 138000,
+    "gamepass": 128000,
+    "gig": 115000,
+}
+CALC_TYPE_LABELS = {
+    "group": "Group Funds",
+    "gamepass": "Gamepass",
+    "gig": "Gig",
+}
 # ─────────────────────────────────────────
 
 
@@ -31,7 +42,7 @@ def save_config(config: dict):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
 
-def get_guild_config(guild_id: int) -> dict | None:
+def get_guild_config(guild_id: int) -> Optional[dict]:
     return load_config().get(str(guild_id))
 
 def set_guild_config(guild_id: int, qris: str, merchant: str):
@@ -57,7 +68,7 @@ def set_leaderboard_config(guild_id: int, channel_id: int, message_id: int = Non
         config[str(guild_id)]["lb_message_id"] = message_id
     save_config(config)
 
-def get_leaderboard_config(guild_id: int) -> dict | None:
+def get_leaderboard_config(guild_id: int) -> Optional[dict]:
     cfg = load_config().get(str(guild_id), {})
     channel_id = cfg.get("lb_channel_id")
     if not channel_id:
@@ -100,6 +111,72 @@ def make_dynamic_qris(static: str, amount: int) -> str:
 
 def format_rupiah(amount: int) -> str:
     return "Rp {:,.0f}".format(amount).replace(",", ".")
+
+def normalize_calc_type(raw_type: str = None) -> Optional[str]:
+    if not raw_type:
+        return "group"
+
+    aliases = {
+        "group": "group",
+        "groupfund": "group",
+        "groupfunds": "group",
+        "gf": "group",
+        "gamepass": "gamepass",
+        "gp": "gamepass",
+        "gig": "gig",
+    }
+    return aliases.get(raw_type.lower().replace(" ", "").replace("-", ""))
+
+def parse_calc_value(raw_value: str):
+    cleaned = raw_value.lower().replace(".", "").replace(",", "").replace(" ", "")
+    if cleaned.endswith("rb"):
+        amount_part = cleaned[:-2]
+        if not amount_part.isdigit():
+            return None
+        amount_idr = int(amount_part) * 1000
+        return ("idr", amount_idr)
+
+    if cleaned.endswith("k"):
+        robux_part = cleaned[:-1]
+        if not robux_part.isdigit():
+            return None
+        robux_amount = int(robux_part) * 1000
+        return ("robux", robux_amount)
+
+    if cleaned.isdigit():
+        return ("robux", int(cleaned))
+
+    return None
+
+def build_calc_usage_embed() -> discord.Embed:
+    embed = discord.Embed(title="🧮 Robux Calc", color=0x1A1F5E)
+    embed.description = (
+        "**Robux -> IDR**\n"
+        "`!calc <robux> [type]`\n\n"
+        "**IDR -> Robux**\n"
+        "`!calc <amount>rb [type]`"
+    )
+    embed.add_field(
+        name="Tipe yang didukung",
+        value="`group/groupfund/gf`, `gamepass/gp`, `gig`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Rate",
+        value=(
+            "`group` = Rp 138.000 / 1.000 Robux\n"
+            "`gamepass` = Rp 128.000 / 1.000 Robux\n"
+            "`gig` = Rp 115.000 / 1.000 Robux"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Contoh",
+        value="`!calc 15k groupfunds`\n`!calc 100rb gig`\n`!calc 50rb gamepass`",
+        inline=False,
+    )
+    embed.set_footer(text="Tipe default: group")
+    return embed
 
 
 # ── Image helpers ──────────────────────────────────────────────────────────────
@@ -229,7 +306,7 @@ def generate_leaderboard_image(players: list) -> io.BytesIO:
 
 # ── Leaderboard fetch ──────────────────────────────────────────────────────────
 
-async def fetch_and_render_leaderboard(session) -> io.BytesIO | None:
+async def fetch_and_render_leaderboard(session) -> Optional[io.BytesIO]:
     try:
         async with session.get(LEADERBOARD_API) as resp:
             if resp.status != 200:
@@ -359,6 +436,52 @@ async def qris_prefix(ctx: commands.Context, amount_raw: str = None):
     await ctx.send(file=file, embed=embed)
 
 
+@bot.command(name="calc")
+async def calc_prefix(ctx: commands.Context, value_raw: str = None, type_raw: str = None):
+    if value_raw is None:
+        await ctx.send(embed=build_calc_usage_embed())
+        return
+
+    calc_type = normalize_calc_type(type_raw)
+    if not calc_type:
+        await ctx.send("❌ Type tidak valid. Gunakan `group/groupfund/gf`, `gamepass/gp`, atau `gig`.")
+        return
+
+    parsed = parse_calc_value(value_raw)
+    if not parsed:
+        await ctx.send("❌ Format tidak valid. Contoh: `!calc 15k groupfunds`, `!calc 100rb gig`, `!calc 50rb gamepass`")
+        return
+
+    calc_mode, amount = parsed
+    if amount <= 0:
+        await ctx.send("❌ Nilai harus lebih dari 0.")
+        return
+
+    rate = CALC_RATES[calc_type]
+    type_label = CALC_TYPE_LABELS[calc_type]
+    rate_label = f"{format_rupiah(rate)} / 1.000 Robux"
+
+    if calc_mode == "robux":
+        total_idr = math.ceil(amount * rate / 1000)
+        embed = discord.Embed(title="💰 Robux Calc", color=0x2ECC71)
+        embed.add_field(name="Input", value=f"**{amount:,} Robux**".replace(",", "."), inline=False)
+        embed.add_field(name="Type", value=type_label, inline=True)
+        embed.add_field(name="Rate", value=rate_label, inline=True)
+        embed.add_field(name="Hasil", value=f"**{format_rupiah(total_idr)}**", inline=False)
+        embed.set_footer(text="Perhitungan IDR dibulatkan ke atas.")
+        await ctx.send(embed=embed)
+        return
+
+    total_robux = math.floor(amount * 1000 / rate)
+    embed = discord.Embed(title="💵 IDR -> Robux Calc", color=0x3498DB)
+    embed.add_field(name="Input", value=f"**{format_rupiah(amount)}**", inline=False)
+    embed.add_field(name="Type", value=type_label, inline=True)
+    embed.add_field(name="Rate", value=rate_label, inline=True)
+    embed.add_field(name="Hasil", value=f"**{total_robux:,} Robux**".replace(",", "."), inline=False)
+    embed.set_footer(text="Estimasi Robux dibulatkan ke bawah.")
+    await ctx.send(embed=embed)
+
+
 # ── !leaderboard ───────────────────────────────────────────────────────────────
 
 @bot.command(name="leaderboard", aliases=["lb", "top"])
@@ -427,6 +550,7 @@ async def qris_reset(interaction: discord.Interaction):
 async def qris_help(interaction: discord.Interaction):
     embed = discord.Embed(title="📖 QRIS Bot — Bantuan", color=0x1A1F5E)
     embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
+    embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds` atau `!calc 100rb gig`", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
     embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
