@@ -111,8 +111,10 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/home/Medusablox/qris-bot
-Environment=DISCORD_TOKEN=TOKEN_KAMU_DISINI
-ExecStart=/home/Medusablox/qris-bot/venv/bin/python bot.py
+Environment=DISCORD_TOKEN=TOKEN_KAMU
+Environment=ROBLOX_GROUP_ID=704572305
+Environment=ROBLOX_API_KEY=API_KEY_ROBLOX_KAMU
+ExecStart=/home/Medusablox/qris-bot/venv/bin/python -u bot.py
 Restart=always
 RestartSec=5
 
