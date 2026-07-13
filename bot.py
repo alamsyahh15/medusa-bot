@@ -8,6 +8,7 @@ import os
 import json
 import math
 import aiohttp
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 # ─────────────────────────────────────────
@@ -17,6 +18,9 @@ DISCORD_TOKEN     = os.getenv("DISCORD_TOKEN", "")
 CONFIG_FILE       = "config.json"
 ADMIN_FEE_RATE    = 0.005
 LEADERBOARD_API   = "https://medusablox.com/api/roblox/external/leaderboard"
+ROBLOX_GROUP_ID   = os.getenv("ROBLOX_GROUP_ID", "")
+ROBLOX_API_KEY    = os.getenv("ROBLOX_API_KEY", "")
+ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
@@ -178,6 +182,45 @@ def build_calc_usage_embed() -> discord.Embed:
     )
     embed.set_footer(text=f"Tipe default: group • Minimum: {CALC_MIN_ROBUX} Robux")
     return embed
+
+def format_datetime_gmt7(dt_utc: datetime) -> str:
+    bulan = [
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    ]
+    jakarta_tz = timezone(timedelta(hours=7))
+    local_dt = dt_utc.astimezone(jakarta_tz)
+    return f"{local_dt.day:02d} {bulan[local_dt.month - 1]} {local_dt.year} {local_dt.hour:02d}:{local_dt.minute:02d} GMT+7"
+
+async def lookup_roblox_user(session: aiohttp.ClientSession, username: str) -> Optional[dict]:
+    payload = {
+        "usernames": [username],
+        "excludeBannedUsers": True,
+    }
+    async with session.post(ROBLOX_USER_LOOKUP_API, json=payload) as resp:
+        if resp.status != 200:
+            return None
+        data = await resp.json()
+
+    users = data.get("data") or []
+    if not users:
+        return None
+    return users[0]
+
+async def get_group_membership(session: aiohttp.ClientSession, group_id: str, user_id: int) -> Optional[dict]:
+    headers = {"x-api-key": ROBLOX_API_KEY}
+    params = {"filter": f"user == 'users/{user_id}'"}
+    url = f"https://apis.roblox.com/cloud/v2/groups/{group_id}/memberships"
+
+    async with session.get(url, headers=headers, params=params) as resp:
+        if resp.status != 200:
+            return None
+        data = await resp.json()
+
+    memberships = data.get("groupMemberships") or []
+    if not memberships:
+        return None
+    return memberships[0]
 
 
 # ── Image helpers ──────────────────────────────────────────────────────────────
@@ -493,6 +536,60 @@ async def calc_prefix(ctx: commands.Context, value_raw: str = None, type_raw: st
     await ctx.send(embed=embed)
 
 
+@bot.command(name="check")
+async def check_prefix(ctx: commands.Context, username_roblox: str = None):
+    if not username_roblox:
+        await ctx.send("❌ Format salah. Contoh: `!check username_roblox`")
+        return
+
+    if not ROBLOX_GROUP_ID or not ROBLOX_API_KEY:
+        await ctx.send("❌ `ROBLOX_GROUP_ID` atau `ROBLOX_API_KEY` belum diset di environment bot.")
+        return
+
+    async with ctx.typing():
+        try:
+            user_data = await lookup_roblox_user(bot.http_session, username_roblox)
+            if not user_data:
+                await ctx.send(f"❌ Username Roblox `{username_roblox}` tidak ditemukan atau terkena filter banned user.")
+                return
+
+            membership = await get_group_membership(bot.http_session, ROBLOX_GROUP_ID, user_data["id"])
+            if not membership:
+                await ctx.send(f"❌ `{user_data['name']}` belum ditemukan sebagai member di group target.")
+                return
+
+            create_time_raw = membership.get("createTime")
+            if not create_time_raw:
+                await ctx.send("❌ Data `createTime` membership tidak ditemukan.")
+                return
+
+            create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
+            available_at = create_time + timedelta(days=3)
+            now_utc = datetime.now(timezone.utc)
+        except Exception as e:
+            await ctx.send(f"❌ Gagal cek membership Roblox: {e}")
+            return
+
+    embed = discord.Embed(title="🔎 Cek Membership Roblox", color=0x1A1F5E)
+    embed.add_field(name="Username", value=user_data["name"], inline=True)
+    embed.add_field(name="Display Name", value=user_data.get("displayName", "-"), inline=True)
+    embed.add_field(name="User ID", value=str(user_data["id"]), inline=True)
+    embed.add_field(name="Join Group", value=format_datetime_gmt7(create_time), inline=False)
+
+    if now_utc >= available_at:
+        embed.add_field(name="Status", value="✅ Available to order robux instant group", inline=False)
+        embed.color = 0x2ECC71
+    else:
+        embed.add_field(
+            name="Status",
+            value=f"⏳ Belum 3 hari. Bisa order pada **{format_datetime_gmt7(available_at)}**",
+            inline=False,
+        )
+        embed.color = 0xF1C40F
+
+    await ctx.send(embed=embed)
+
+
 # ── !leaderboard ───────────────────────────────────────────────────────────────
 
 @bot.command(name="leaderboard", aliases=["lb", "top"])
@@ -562,6 +659,7 @@ async def qris_help(interaction: discord.Interaction):
     embed = discord.Embed(title="📖 QRIS Bot — Bantuan", color=0x1A1F5E)
     embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
     embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds` atau `!calc 100rb gig`", inline=False)
+    embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
     embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
