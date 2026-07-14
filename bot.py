@@ -119,6 +119,17 @@ def make_dynamic_qris(static: str, amount: int) -> str:
 def format_rupiah(amount: int) -> str:
     return "Rp {:,.0f}".format(amount).replace(",", ".")
 
+def log_debug(event: str, **kwargs):
+    parts = []
+    for key, value in kwargs.items():
+        if isinstance(value, str):
+            value = value.replace("\n", " ").strip()
+            if len(value) > 160:
+                value = value[:157] + "..."
+        parts.append(f"{key}={value}")
+    suffix = f" | {' | '.join(parts)}" if parts else ""
+    print(f"[Debug] {event}{suffix}")
+
 def normalize_calc_type(raw_type: str = None) -> Optional[str]:
     if not raw_type:
         return "group"
@@ -232,6 +243,7 @@ async def lookup_roblox_user(session: aiohttp.ClientSession, username: str) -> O
         "excludeBannedUsers": True,
     }
     async with session.post(ROBLOX_USER_LOOKUP_API, json=payload) as resp:
+        log_debug("lookup_roblox_user.response", username=username, status=resp.status)
         if resp.status != 200:
             return None
         data = await resp.json()
@@ -247,6 +259,7 @@ async def get_group_membership(session: aiohttp.ClientSession, group_id: str, us
     url = f"https://apis.roblox.com/cloud/v2/groups/{group_id}/memberships"
 
     async with session.get(url, headers=headers, params=params) as resp:
+        log_debug("get_group_membership.response", group_id=group_id, user_id=user_id, status=resp.status)
         if resp.status != 200:
             return None
         data = await resp.json()
@@ -265,7 +278,9 @@ async def place_external_order(session: aiohttp.ClientSession, username: str, am
         "username": username,
         "amount": amount,
     }
+    log_debug("place_external_order.request", username=username, amount=amount, url=ROBLOX_EXTERNAL_ORDER_API)
     async with session.post(ROBLOX_EXTERNAL_ORDER_API, headers=headers, json=payload) as resp:
+        log_debug("place_external_order.response", username=username, amount=amount, status=resp.status)
         try:
             data = await resp.json()
         except Exception:
@@ -289,7 +304,9 @@ async def upload_payment_proof(session: aiohttp.ClientSession, order_number: str
         "order_number": order_number,
         "image_url": image_url,
     }
+    log_debug("upload_payment_proof.request", order_number=order_number, url=ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API, image_url=image_url)
     async with session.post(ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API, headers=headers, json=payload) as resp:
+        log_debug("upload_payment_proof.response", order_number=order_number, status=resp.status)
         try:
             data = await resp.json()
         except Exception:
@@ -620,11 +637,14 @@ async def calc_prefix(ctx: commands.Context, value_raw: str = None, type_raw: st
 
 @bot.command(name="check")
 async def check_prefix(ctx: commands.Context, username_roblox: str = None):
+    log_debug("check.invoked", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None), username=username_roblox)
     if not username_roblox:
+        log_debug("check.invalid_usage", reason="missing_username")
         await ctx.send("❌ Format salah. Contoh: `!check username_roblox`")
         return
 
     if not ROBLOX_GROUP_ID or not ROBLOX_API_KEY:
+        log_debug("check.invalid_config", has_group_id=bool(ROBLOX_GROUP_ID), has_api_key=bool(ROBLOX_API_KEY))
         await ctx.send("❌ `ROBLOX_GROUP_ID` atau `ROBLOX_API_KEY` belum diset di environment bot.")
         return
 
@@ -632,16 +652,19 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
         try:
             user_data = await lookup_roblox_user(bot.http_session, username_roblox)
             if not user_data:
+                log_debug("check.user_not_found", username=username_roblox)
                 await ctx.send(f"❌ Username Roblox `{username_roblox}` tidak ditemukan atau terkena filter banned user.")
                 return
 
             membership = await get_group_membership(bot.http_session, ROBLOX_GROUP_ID, user_data["id"])
             if not membership:
+                log_debug("check.membership_not_found", username=user_data["name"], user_id=user_data["id"], group_id=ROBLOX_GROUP_ID)
                 await ctx.send(f"❌ `{user_data['name']}` belum ditemukan sebagai member di group target.")
                 return
 
             create_time_raw = membership.get("createTime")
             if not create_time_raw:
+                log_debug("check.create_time_missing", username=user_data["name"], user_id=user_data["id"])
                 await ctx.send("❌ Data `createTime` membership tidak ditemukan.")
                 return
 
@@ -649,6 +672,7 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
             available_at = create_time + timedelta(days=3)
             now_utc = datetime.now(timezone.utc)
         except Exception as e:
+            log_debug("check.exception", username=username_roblox, error=str(e))
             await ctx.send(f"❌ Gagal cek membership Roblox: {e}")
             return
 
@@ -659,9 +683,11 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
     embed.add_field(name="Join Group", value=format_datetime_gmt7(create_time), inline=False)
 
     if now_utc >= available_at:
+        log_debug("check.eligible", username=user_data["name"], user_id=user_data["id"], available_at=format_datetime_gmt7(available_at))
         embed.add_field(name="Status", value="✅ Available to order robux instant group", inline=False)
         embed.color = 0x2ECC71
     else:
+        log_debug("check.not_eligible", username=user_data["name"], user_id=user_data["id"], available_at=format_datetime_gmt7(available_at))
         embed.add_field(
             name="Status",
             value=f"⏳ Belum 3 hari. Bisa order pada **{format_datetime_gmt7(available_at)}**",
@@ -674,21 +700,26 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
 
 @bot.command(name="order")
 async def order_prefix(ctx: commands.Context, amount_raw: str = None):
+    log_debug("order.invoked", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None), amount_raw=amount_raw, has_reply=bool(getattr(ctx.message, "reference", None)))
     if not amount_raw:
+        log_debug("order.invalid_usage", reason="missing_amount")
         await ctx.send(f"❌ Format salah. Reply message `!check` yang eligible lalu kirim `!order <robux_amount>` (minimum {CALC_MIN_ROBUX} Robux)")
         return
 
     amount = parse_robux_amount_input(amount_raw)
     if not amount or amount <= 0:
+        log_debug("order.invalid_amount", amount_raw=amount_raw, parsed_amount=amount)
         await ctx.send("❌ Nominal Robux tidak valid. Contoh: `!order 125` atau `!order 1k`")
         return
 
     if amount < CALC_MIN_ROBUX:
+        log_debug("order.below_minimum", amount=amount, minimum=CALC_MIN_ROBUX)
         await ctx.send(f"❌ Minimum order adalah **{CALC_MIN_ROBUX} Robux**.")
         return
 
     reference = ctx.message.reference
     if not reference or not reference.message_id:
+        log_debug("order.invalid_usage", reason="missing_reply")
         await ctx.send("❌ Command ini harus dipakai dengan cara reply ke message hasil `!check` yang eligible.")
         return
 
@@ -697,24 +728,29 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
         if replied_message is None:
             replied_message = await ctx.channel.fetch_message(reference.message_id)
     except Exception:
+        log_debug("order.reply_fetch_failed", message_id=getattr(reference, "message_id", None))
         await ctx.send("❌ Gagal mengambil message yang direply.")
         return
 
     if not replied_message.embeds:
+        log_debug("order.invalid_reply", reason="no_embeds", replied_message_id=replied_message.id)
         await ctx.send("❌ Message yang direply bukan hasil `!check`.")
         return
 
     check_embed = replied_message.embeds[0]
     if check_embed.title != "🔎 Cek Membership Roblox":
+        log_debug("order.invalid_reply", reason="wrong_embed_title", title=check_embed.title)
         await ctx.send("❌ Reply harus ke message hasil `!check`.")
         return
 
     username = get_embed_field_value(check_embed, "Username")
     status = get_embed_field_value(check_embed, "Status") or ""
     if not username:
+        log_debug("order.invalid_reply", reason="missing_username_field")
         await ctx.send("❌ Username Roblox tidak ditemukan di message `!check`.")
         return
     if "Available to order robux instant group" not in status:
+        log_debug("order.not_eligible", username=username, status=status)
         await ctx.send("❌ User ini belum eligible untuk order instant group.")
         return
 
@@ -722,6 +758,7 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
         try:
             order_response = await place_external_order(bot.http_session, username, amount)
         except Exception as e:
+            log_debug("order.exception", username=username, amount=amount, error=str(e))
             await ctx.send(f"❌ Gagal membuat order: {e}")
             return
 
@@ -729,10 +766,12 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
         error_message = "Gagal membuat external order."
         if order_response and order_response.get("message"):
             error_message = order_response["message"]
+        log_debug("order.failed", username=username, amount=amount, message=error_message)
         await ctx.send(f"❌ {error_message}")
         return
 
     order_data = order_response.get("data") or {}
+    log_debug("order.succeeded", username=order_data.get("username", username), order_number=order_data.get("order_number"), amount=order_data.get("amount", amount), total_price=order_data.get("total_price"))
     embed = discord.Embed(
         title="✅ Order berhasil dibuat",
         description=order_response.get("message", "External order placed successfully."),
@@ -768,9 +807,11 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
             qris_file = discord.File(qris_image, filename="order_qris.png")
             embed.set_image(url="attachment://order_qris.png")
             embed.add_field(name="QRIS Total", value=format_rupiah(qris_total), inline=True)
+            log_debug("order.qris_generated", order_number=order_data.get("order_number"), subtotal=total_price, qris_total=qris_total)
             await ctx.send(embed=embed, file=qris_file)
             return
         except Exception as e:
+            log_debug("order.qris_failed", order_number=order_data.get("order_number"), error=str(e))
             embed.add_field(name="QRIS", value=f"Gagal generate QRIS: `{e}`", inline=False)
 
     await ctx.send(embed=embed)
@@ -778,12 +819,15 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
 
 @bot.command(name="payment")
 async def payment_prefix(ctx: commands.Context, order_number: str = None):
+    log_debug("payment.invoked", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None), order_number=order_number, has_reply=bool(getattr(ctx.message, "reference", None)))
     if not order_number:
+        log_debug("payment.invalid_usage", reason="missing_order_number")
         await ctx.send("❌ Format salah. Reply message customer yang berisi gambar bukti bayar lalu kirim `!payment <order_number>`")
         return
 
     reference = ctx.message.reference
     if not reference or not reference.message_id:
+        log_debug("payment.invalid_usage", reason="missing_reply")
         await ctx.send("❌ Command ini harus dipakai dengan cara reply ke message customer yang berisi bukti pembayaran.")
         return
 
@@ -792,11 +836,13 @@ async def payment_prefix(ctx: commands.Context, order_number: str = None):
         if replied_message is None:
             replied_message = await ctx.channel.fetch_message(reference.message_id)
     except Exception:
+        log_debug("payment.reply_fetch_failed", message_id=getattr(reference, "message_id", None))
         await ctx.send("❌ Gagal mengambil message yang direply.")
         return
 
     image_url = get_message_image_url(replied_message)
     if not image_url:
+        log_debug("payment.image_not_found", replied_message_id=replied_message.id)
         await ctx.send("❌ Tidak ditemukan gambar pada message yang direply. Pastikan customer mengirim attachment atau embed image.")
         return
 
@@ -804,6 +850,7 @@ async def payment_prefix(ctx: commands.Context, order_number: str = None):
         try:
             upload_response = await upload_payment_proof(bot.http_session, order_number, image_url)
         except Exception as e:
+            log_debug("payment.exception", order_number=order_number, image_url=image_url, error=str(e))
             await ctx.send(f"❌ Gagal upload payment proof: {e}")
             return
 
@@ -811,10 +858,12 @@ async def payment_prefix(ctx: commands.Context, order_number: str = None):
         error_message = "Gagal upload payment proof."
         if upload_response and upload_response.get("message"):
             error_message = upload_response["message"]
+        log_debug("payment.failed", order_number=order_number, image_url=image_url, message=error_message)
         await ctx.send(f"❌ {error_message}")
         return
 
     upload_data = upload_response.get("data") or {}
+    log_debug("payment.succeeded", order_number=upload_data.get("order_number", order_number), status=upload_data.get("status", "done"), image_url=image_url)
     embed = discord.Embed(
         title="✅ Payment berhasil diupload",
         description=upload_response.get("message", "Payment uploaded successfully."),
