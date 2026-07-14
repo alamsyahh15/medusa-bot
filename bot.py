@@ -705,9 +705,9 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
     embed.add_field(name="Total Price", value=format_rupiah(int(order_data.get("total_price", 0))), inline=True)
     embed.add_field(name="Status", value=order_data.get("status", "-"), inline=True)
 
-    order_status_url = order_data.get("order_status_url")
-    if order_status_url:
-        embed.add_field(name="Order URL", value=order_status_url.strip(), inline=False)
+    order_url = (order_data.get("order_url") or "").strip().strip("`").strip()
+    if order_url:
+        embed.add_field(name="Order URL", value=f"[Klik untuk buka order]({order_url})", inline=False)
 
     avatar_url = (order_data.get("avatar") or "").strip()
     if avatar_url:
