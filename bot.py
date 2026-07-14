@@ -127,6 +127,9 @@ def get_configured_roblox_group_ids():
             group_ids.append(cleaned)
     return group_ids
 
+def build_roblox_group_share_url(group_id: str) -> str:
+    return f"https://www.roblox.com/share/g/{group_id}"
+
 def log_debug(event: str, **kwargs):
     parts = []
     for key, value in kwargs.items():
@@ -705,10 +708,12 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
     group_lines = []
     all_groups_ready = True
     latest_available_at = None
+    missing_group_ids = []
     for index, result in enumerate(group_results, start=1):
         group_id = result["group_id"]
         if not result["membership_found"]:
             all_groups_ready = False
+            missing_group_ids.append(group_id)
             group_lines.append(f"Group {index} (`{group_id}`): ❌ Belum join group")
             continue
 
@@ -751,7 +756,19 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
         )
         embed.color = 0xF1C40F
 
-    await ctx.send(embed=embed)
+    view = None
+    if missing_group_ids:
+        view = discord.ui.View()
+        for index, group_id in enumerate(missing_group_ids, start=1):
+            view.add_item(
+                discord.ui.Button(
+                    label=f"Join Group {index}",
+                    url=build_roblox_group_share_url(group_id),
+                )
+            )
+        log_debug("check.join_buttons_added", username=user_data["name"], missing_groups=",".join(missing_group_ids))
+
+    await ctx.send(embed=embed, view=view)
 
 
 @bot.command(name="order")
