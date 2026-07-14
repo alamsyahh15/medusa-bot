@@ -700,7 +700,11 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
             await ctx.send(f"❌ Gagal cek membership Roblox: {e}")
             return
 
-    embed = discord.Embed(title="🔎 Cek Membership Roblox", color=0x1A1F5E)
+    embed = discord.Embed(
+        title="🔎 Hasil Cek Membership Roblox",
+        description="Status membership dicek untuk semua group yang wajib dipenuhi sebelum order instant group.",
+        color=0x1A1F5E,
+    )
     embed.add_field(name="Username", value=user_data["name"], inline=True)
     embed.add_field(name="Display Name", value=user_data.get("displayName", "-"), inline=True)
     embed.add_field(name="User ID", value=str(user_data["id"]), inline=True)
@@ -714,7 +718,9 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
         if not result["membership_found"]:
             all_groups_ready = False
             missing_group_ids.append(group_id)
-            group_lines.append(f"Group {index} (`{group_id}`): ❌ Belum join group")
+            group_lines.append(
+                f"**Group {index}** (`{group_id}`)\nBelum join group ini."
+            )
             continue
 
         create_time = result["create_time"]
@@ -724,19 +730,21 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
 
         if result["is_ready"]:
             group_lines.append(
-                f"Group {index} (`{group_id}`): ✅ Join {format_datetime_gmt7(create_time)}"
+                f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}."
             )
         else:
             all_groups_ready = False
             group_lines.append(
-                f"Group {index} (`{group_id}`): ⏳ Join {format_datetime_gmt7(create_time)} • Eligible {format_datetime_gmt7(available_at)}"
+                f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nBisa dipakai untuk order mulai {format_datetime_gmt7(available_at)}."
             )
-
-    embed.add_field(name="Cek Group", value="\n".join(group_lines), inline=False)
 
     if all_groups_ready and group_results:
         log_debug("check.eligible", username=user_data["name"], user_id=user_data["id"], group_count=len(group_results))
-        embed.add_field(name="Status", value="✅ Available to order robux instant group", inline=False)
+        embed.add_field(
+            name="Status",
+            value="✅ User ini sudah eligible untuk order robux instant group.",
+            inline=False,
+        )
         embed.color = 0x2ECC71
     else:
         log_debug(
@@ -746,9 +754,11 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
             group_count=len(group_results),
             latest_available_at=format_datetime_gmt7(latest_available_at) if latest_available_at else "unknown",
         )
-        status_value = "⏳ Belum eligible di semua group. Semua group harus join minimal 3 hari."
+        status_value = "⏳ User ini belum eligible untuk order instant group."
         if latest_available_at:
-            status_value += f"\nBisa order setelah semua group siap, estimasi **{format_datetime_gmt7(latest_available_at)}**."
+            status_value += f"\nEstimasi paling cepat bisa order: **{format_datetime_gmt7(latest_available_at)}**."
+        if missing_group_ids:
+            status_value += "\nMasih ada group yang belum di-join."
         embed.add_field(
             name="Status",
             value=status_value,
@@ -756,13 +766,15 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
         )
         embed.color = 0xF1C40F
 
+    embed.add_field(name="Detail Group", value="\n\n".join(group_lines), inline=False)
+
     view = None
     if missing_group_ids:
         view = discord.ui.View()
         for index, group_id in enumerate(missing_group_ids, start=1):
             view.add_item(
                 discord.ui.Button(
-                    label=f"Join Group {index}",
+                    label=f"Buka Group {index}",
                     url=build_roblox_group_share_url(group_id),
                 )
             )
