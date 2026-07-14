@@ -21,6 +21,7 @@ LEADERBOARD_API   = "https://medusablox.com/api/roblox/external/leaderboard"
 ROBLOX_GROUP_ID   = os.getenv("ROBLOX_GROUP_ID", "")
 ROBLOX_API_KEY    = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
+ROBLOX_EXTERNAL_ORDER_API = os.getenv("ROBLOX_EXTERNAL_ORDER_API", "http://localhost:8000/api/roblox/external/order")
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
@@ -192,6 +193,23 @@ def format_datetime_gmt7(dt_utc: datetime) -> str:
     local_dt = dt_utc.astimezone(jakarta_tz)
     return f"{local_dt.day:02d} {bulan[local_dt.month - 1]} {local_dt.year} {local_dt.hour:02d}:{local_dt.minute:02d} GMT+7"
 
+def get_embed_field_value(embed: discord.Embed, field_name: str) -> Optional[str]:
+    for field in embed.fields:
+        if field.name == field_name:
+            return field.value
+    return None
+
+def parse_robux_amount_input(raw_value: str) -> Optional[int]:
+    cleaned = raw_value.lower().replace(".", "").replace(",", "").replace(" ", "")
+    if cleaned.endswith("k"):
+        number_part = cleaned[:-1]
+        if not number_part.isdigit():
+            return None
+        return int(number_part) * 1000
+    if cleaned.isdigit():
+        return int(cleaned)
+    return None
+
 async def lookup_roblox_user(session: aiohttp.ClientSession, username: str) -> Optional[dict]:
     payload = {
         "usernames": [username],
@@ -221,6 +239,30 @@ async def get_group_membership(session: aiohttp.ClientSession, group_id: str, us
     if not memberships:
         return None
     return memberships[0]
+
+async def place_external_order(session: aiohttp.ClientSession, username: str, amount: int) -> Optional[dict]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "username": username,
+        "amount": amount,
+    }
+    async with session.post(ROBLOX_EXTERNAL_ORDER_API, headers=headers, json=payload) as resp:
+        try:
+            data = await resp.json()
+        except Exception:
+            text = await resp.text()
+            return {
+                "success": False,
+                "message": f"HTTP {resp.status}: {text[:300]}",
+            }
+
+    if resp.status >= 400:
+        data.setdefault("success", False)
+        data.setdefault("message", f"HTTP {resp.status}")
+    return data
 
 
 # ── Image helpers ──────────────────────────────────────────────────────────────
@@ -590,6 +632,90 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="order")
+async def order_prefix(ctx: commands.Context, amount_raw: str = None):
+    if not amount_raw:
+        await ctx.send(f"❌ Format salah. Reply message `!check` yang eligible lalu kirim `!order <robux_amount>` (minimum {CALC_MIN_ROBUX} Robux)")
+        return
+
+    amount = parse_robux_amount_input(amount_raw)
+    if not amount or amount <= 0:
+        await ctx.send("❌ Nominal Robux tidak valid. Contoh: `!order 125` atau `!order 1k`")
+        return
+
+    if amount < CALC_MIN_ROBUX:
+        await ctx.send(f"❌ Minimum order adalah **{CALC_MIN_ROBUX} Robux**.")
+        return
+
+    reference = ctx.message.reference
+    if not reference or not reference.message_id:
+        await ctx.send("❌ Command ini harus dipakai dengan cara reply ke message hasil `!check` yang eligible.")
+        return
+
+    try:
+        replied_message = reference.resolved
+        if replied_message is None:
+            replied_message = await ctx.channel.fetch_message(reference.message_id)
+    except Exception:
+        await ctx.send("❌ Gagal mengambil message yang direply.")
+        return
+
+    if not replied_message.embeds:
+        await ctx.send("❌ Message yang direply bukan hasil `!check`.")
+        return
+
+    check_embed = replied_message.embeds[0]
+    if check_embed.title != "🔎 Cek Membership Roblox":
+        await ctx.send("❌ Reply harus ke message hasil `!check`.")
+        return
+
+    username = get_embed_field_value(check_embed, "Username")
+    status = get_embed_field_value(check_embed, "Status") or ""
+    if not username:
+        await ctx.send("❌ Username Roblox tidak ditemukan di message `!check`.")
+        return
+    if "Available to order robux instant group" not in status:
+        await ctx.send("❌ User ini belum eligible untuk order instant group.")
+        return
+
+    async with ctx.typing():
+        try:
+            order_response = await place_external_order(bot.http_session, username, amount)
+        except Exception as e:
+            await ctx.send(f"❌ Gagal membuat order: {e}")
+            return
+
+    if not order_response or not order_response.get("success"):
+        error_message = "Gagal membuat external order."
+        if order_response and order_response.get("message"):
+            error_message = order_response["message"]
+        await ctx.send(f"❌ {error_message}")
+        return
+
+    order_data = order_response.get("data") or {}
+    embed = discord.Embed(
+        title="✅ Order berhasil dibuat",
+        description=order_response.get("message", "External order placed successfully."),
+        color=0x2ECC71,
+    )
+    embed.add_field(name="Order Number", value=order_data.get("order_number", "-"), inline=True)
+    embed.add_field(name="Username", value=order_data.get("username", username), inline=True)
+    embed.add_field(name="Amount", value=f"{order_data.get('amount', amount)} Robux", inline=True)
+    embed.add_field(name="Method", value=order_data.get("method", "-"), inline=True)
+    embed.add_field(name="Total Price", value=format_rupiah(int(order_data.get("total_price", 0))), inline=True)
+    embed.add_field(name="Status", value=order_data.get("status", "-"), inline=True)
+
+    order_status_url = order_data.get("order_status_url")
+    if order_status_url:
+        embed.add_field(name="Order URL", value=order_status_url.strip(), inline=False)
+
+    avatar_url = (order_data.get("avatar") or "").strip()
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+
+    await ctx.send(embed=embed)
+
+
 # ── !leaderboard ───────────────────────────────────────────────────────────────
 
 @bot.command(name="leaderboard", aliases=["lb", "top"])
@@ -660,6 +786,7 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
     embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds` atau `!calc 100rb gig`", inline=False)
     embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
+    embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux.", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
     embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
