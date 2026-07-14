@@ -22,6 +22,7 @@ ROBLOX_GROUP_ID   = os.getenv("ROBLOX_GROUP_ID", "")
 ROBLOX_API_KEY    = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
 ROBLOX_EXTERNAL_ORDER_API = os.getenv("ROBLOX_EXTERNAL_ORDER_API", "http://localhost:8000/api/roblox/external/order")
+ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API = os.getenv("ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API", "http://localhost:8000/api/roblox/external/order/upload-payment")
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
@@ -210,6 +211,21 @@ def parse_robux_amount_input(raw_value: str) -> Optional[int]:
         return int(cleaned)
     return None
 
+def get_message_image_url(message: discord.Message) -> Optional[str]:
+    for attachment in message.attachments:
+        content_type = attachment.content_type or ""
+        lower_name = attachment.filename.lower()
+        if content_type.startswith("image/") or lower_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            return attachment.url
+
+    for embed in message.embeds:
+        if embed.image and embed.image.url:
+            return embed.image.url
+        if embed.thumbnail and embed.thumbnail.url:
+            return embed.thumbnail.url
+
+    return None
+
 async def lookup_roblox_user(session: aiohttp.ClientSession, username: str) -> Optional[dict]:
     payload = {
         "usernames": [username],
@@ -250,6 +266,30 @@ async def place_external_order(session: aiohttp.ClientSession, username: str, am
         "amount": amount,
     }
     async with session.post(ROBLOX_EXTERNAL_ORDER_API, headers=headers, json=payload) as resp:
+        try:
+            data = await resp.json()
+        except Exception:
+            text = await resp.text()
+            return {
+                "success": False,
+                "message": f"HTTP {resp.status}: {text[:300]}",
+            }
+
+    if resp.status >= 400:
+        data.setdefault("success", False)
+        data.setdefault("message", f"HTTP {resp.status}")
+    return data
+
+async def upload_payment_proof(session: aiohttp.ClientSession, order_number: str, image_url: str) -> Optional[dict]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "order_number": order_number,
+        "image_url": image_url,
+    }
+    async with session.post(ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API, headers=headers, json=payload) as resp:
         try:
             data = await resp.json()
         except Exception:
@@ -736,6 +776,56 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="payment")
+async def payment_prefix(ctx: commands.Context, order_number: str = None):
+    if not order_number:
+        await ctx.send("❌ Format salah. Reply message customer yang berisi gambar bukti bayar lalu kirim `!payment <order_number>`")
+        return
+
+    reference = ctx.message.reference
+    if not reference or not reference.message_id:
+        await ctx.send("❌ Command ini harus dipakai dengan cara reply ke message customer yang berisi bukti pembayaran.")
+        return
+
+    try:
+        replied_message = reference.resolved
+        if replied_message is None:
+            replied_message = await ctx.channel.fetch_message(reference.message_id)
+    except Exception:
+        await ctx.send("❌ Gagal mengambil message yang direply.")
+        return
+
+    image_url = get_message_image_url(replied_message)
+    if not image_url:
+        await ctx.send("❌ Tidak ditemukan gambar pada message yang direply. Pastikan customer mengirim attachment atau embed image.")
+        return
+
+    async with ctx.typing():
+        try:
+            upload_response = await upload_payment_proof(bot.http_session, order_number, image_url)
+        except Exception as e:
+            await ctx.send(f"❌ Gagal upload payment proof: {e}")
+            return
+
+    if not upload_response or not upload_response.get("success"):
+        error_message = "Gagal upload payment proof."
+        if upload_response and upload_response.get("message"):
+            error_message = upload_response["message"]
+        await ctx.send(f"❌ {error_message}")
+        return
+
+    upload_data = upload_response.get("data") or {}
+    embed = discord.Embed(
+        title="✅ Payment berhasil diupload",
+        description=upload_response.get("message", "Payment uploaded successfully."),
+        color=0x2ECC71,
+    )
+    embed.add_field(name="Order Number", value=upload_data.get("order_number", order_number), inline=True)
+    embed.add_field(name="Status", value=upload_data.get("status", "done"), inline=True)
+    embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
+    await ctx.send(embed=embed)
+
+
 # ── !leaderboard ───────────────────────────────────────────────────────────────
 
 @bot.command(name="leaderboard", aliases=["lb", "top"])
@@ -807,6 +897,7 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds` atau `!calc 100rb gig`", inline=False)
     embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
     embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux.", inline=False)
+    embed.add_field(name="!payment <order_number>", value="Reply ke message customer yang berisi bukti bayar untuk upload payment.", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
     embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
