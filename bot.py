@@ -52,18 +52,27 @@ def save_config(config: dict):
 def get_guild_config(guild_id: int) -> Optional[dict]:
     return load_config().get(str(guild_id))
 
+def has_qris_config(guild_id: int) -> bool:
+    cfg = get_guild_config(guild_id) or {}
+    return bool(cfg.get("static_qris") and cfg.get("merchant_name"))
+
 def set_guild_config(guild_id: int, qris: str, merchant: str):
     config = load_config()
-    config[str(guild_id)] = {
-        "static_qris": qris,
-        "merchant_name": merchant,
-    }
+    guild_key = str(guild_id)
+    if guild_key not in config:
+        config[guild_key] = {}
+    config[guild_key]["static_qris"] = qris
+    config[guild_key]["merchant_name"] = merchant
     save_config(config)
 
 def delete_guild_config(guild_id: int):
     config = load_config()
-    if str(guild_id) in config:
-        del config[str(guild_id)]
+    guild_key = str(guild_id)
+    if guild_key in config:
+        config[guild_key].pop("static_qris", None)
+        config[guild_key].pop("merchant_name", None)
+        if not config[guild_key]:
+            del config[guild_key]
         save_config(config)
 
 def set_leaderboard_config(guild_id: int, channel_id: int, message_id: int = None):
@@ -81,6 +90,36 @@ def get_leaderboard_config(guild_id: int) -> Optional[dict]:
     if not channel_id:
         return None
     return {"channel_id": channel_id, "message_id": cfg.get("lb_message_id")}
+
+def set_order_role_config(guild_id: int, role_ids):
+    config = load_config()
+    guild_key = str(guild_id)
+    if guild_key not in config:
+        config[guild_key] = {}
+    normalized_role_ids = []
+    for role_id in role_ids or []:
+        role_id = int(role_id)
+        if role_id not in normalized_role_ids:
+            normalized_role_ids.append(role_id)
+    if not normalized_role_ids:
+        config[guild_key].pop("order_role_id", None)
+        config[guild_key].pop("order_role_ids", None)
+        if not config[guild_key]:
+            del config[guild_key]
+    else:
+        config[guild_key]["order_role_ids"] = normalized_role_ids
+        config[guild_key].pop("order_role_id", None)
+    save_config(config)
+
+def get_order_role_ids(guild_id: int):
+    cfg = load_config().get(str(guild_id), {})
+    role_ids = cfg.get("order_role_ids")
+    if role_ids:
+        return [int(role_id) for role_id in role_ids]
+    legacy_role_id = cfg.get("order_role_id")
+    if legacy_role_id:
+        return [int(legacy_role_id)]
+    return []
 
 
 # ── QRIS helpers ───────────────────────────────────────────────────────────────
@@ -129,6 +168,40 @@ def get_configured_roblox_group_ids():
 
 def build_roblox_group_share_url(group_id: str) -> str:
     return f"https://www.roblox.com/share/g/{group_id}"
+
+def get_order_roles(guild: Optional[discord.Guild]):
+    if not guild:
+        return []
+    roles = []
+    for role_id in get_order_role_ids(guild.id):
+        role = guild.get_role(role_id)
+        if role:
+            roles.append(role)
+    return roles
+
+def can_use_order_commands(member, guild: Optional[discord.Guild]) -> bool:
+    if not guild or not isinstance(member, discord.Member):
+        return False
+    if member.guild_permissions.administrator:
+        return True
+    allowed_roles = get_order_roles(guild)
+    if not allowed_roles:
+        return True
+    return any(role in member.roles for role in allowed_roles)
+
+async def ensure_order_command_access(ctx: commands.Context) -> bool:
+    if not ctx.guild or not isinstance(ctx.author, discord.Member):
+        await ctx.send("❌ Command ini hanya bisa dipakai di server.")
+        return False
+    allowed_roles = get_order_roles(ctx.guild)
+    if can_use_order_commands(ctx.author, ctx.guild):
+        return True
+    if allowed_roles:
+        role_mentions = ", ".join(role.mention for role in allowed_roles)
+        await ctx.send(f"❌ Command ini hanya bisa dipakai role {role_mentions} atau admin.")
+    else:
+        await ctx.send("❌ Command ini tidak bisa dipakai saat ini.")
+    return False
 
 def log_debug(event: str, **kwargs):
     parts = []
@@ -555,7 +628,7 @@ async def on_ready():
 @bot.command(name="qris")
 async def qris_prefix(ctx: commands.Context, amount_raw: str = None):
     guild_config = get_guild_config(ctx.guild.id)
-    if not guild_config:
+    if not guild_config or not guild_config.get("static_qris") or not guild_config.get("merchant_name"):
         await ctx.send(embed=discord.Embed(title="⚙️ QRIS belum dikonfigurasi", description="Admin perlu setup dulu dengan `/qrissetup`", color=0xE67E22))
         return
     if amount_raw is None:
@@ -786,6 +859,9 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
 @bot.command(name="order")
 async def order_prefix(ctx: commands.Context, amount_raw: str = None):
     log_debug("order.invoked", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None), amount_raw=amount_raw, has_reply=bool(getattr(ctx.message, "reference", None)))
+    if not await ensure_order_command_access(ctx):
+        log_debug("order.access_denied", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None))
+        return
     if not amount_raw:
         log_debug("order.invalid_usage", reason="missing_amount")
         await ctx.send(f"❌ Format salah. Reply message `!check` yang eligible lalu kirim `!order <robux_amount>` (minimum {CALC_MIN_ROBUX} Robux)")
@@ -887,7 +963,8 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
 
     guild_config = get_guild_config(ctx.guild.id) if ctx.guild else None
     total_price = int(order_data.get("total_price", 0) or 0)
-    if guild_config and total_price > 0:
+    has_order_qris = bool(guild_config and guild_config.get("static_qris") and guild_config.get("merchant_name"))
+    if has_order_qris and total_price > 0:
         try:
             qris_total = apply_admin_fee(total_price)
             qris_payload = make_dynamic_qris(guild_config["static_qris"], qris_total)
@@ -913,6 +990,9 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
 @bot.command(name="payment")
 async def payment_prefix(ctx: commands.Context, order_number: str = None):
     log_debug("payment.invoked", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None), order_number=order_number, has_reply=bool(getattr(ctx.message, "reference", None)))
+    if not await ensure_order_command_access(ctx):
+        log_debug("payment.access_denied", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None))
+        return
     if not order_number:
         log_debug("payment.invalid_usage", reason="missing_order_number")
         await ctx.send("❌ Format salah. Reply message customer yang berisi gambar bukti bayar lalu kirim `!payment <order_number>`")
@@ -1007,14 +1087,17 @@ async def qris_setup(interaction: discord.Interaction, static_payload: str, merc
 @bot.tree.command(name="qrisinfo", description="Lihat konfigurasi QRIS server ini")
 async def qris_info(interaction: discord.Interaction):
     cfg = get_guild_config(interaction.guild.id)
-    if not cfg:
+    if not cfg or not cfg.get("static_qris") or not cfg.get("merchant_name"):
         await interaction.response.send_message(embed=discord.Embed(title="⚙️ Belum ada konfigurasi QRIS", description="Admin gunakan `/qrissetup`.", color=0xE67E22), ephemeral=True)
         return
     fee_status = "✅ Aktif untuk semua nominal (+0.5%)"
+    allowed_roles = get_order_roles(interaction.guild)
+    allowed_role_text = ", ".join(role.mention for role in allowed_roles) if allowed_roles else "Semua member"
     embed = discord.Embed(title="📋 Konfigurasi QRIS Server", color=0x1A1F5E)
     embed.add_field(name="Merchant", value=cfg["merchant_name"], inline=False)
     embed.add_field(name="Payload (preview)", value=f"`{cfg['static_qris'][:50]}...`", inline=False)
     embed.add_field(name="Biaya Admin", value=fee_status, inline=False)
+    embed.add_field(name="Role Order/Payment", value=allowed_role_text, inline=False)
     embed.add_field(name="Status", value="✅ Aktif", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1024,7 +1107,7 @@ async def qris_info(interaction: discord.Interaction):
 @bot.tree.command(name="qrisreset", description="Hapus konfigurasi QRIS server ini (Admin only)")
 @app_commands.default_permissions(administrator=True)
 async def qris_reset(interaction: discord.Interaction):
-    if not get_guild_config(interaction.guild.id):
+    if not has_qris_config(interaction.guild.id):
         await interaction.response.send_message("⚠️ Server ini belum memiliki konfigurasi QRIS.", ephemeral=True); return
     delete_guild_config(interaction.guild.id)
     await interaction.response.send_message(embed=discord.Embed(title="🗑️ Konfigurasi QRIS dihapus", description="Gunakan `/qrissetup` untuk mengatur ulang.", color=0xE74C3C), ephemeral=True)
@@ -1038,14 +1121,64 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
     embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds` atau `!calc 100rb gig`", inline=False)
     embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
-    embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux.", inline=False)
-    embed.add_field(name="!payment <order_number>", value="Reply ke message customer yang berisi bukti bayar untuk upload payment.", inline=False)
+    embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux. Bisa dibatasi via `/setrole`.", inline=False)
+    embed.add_field(name="!payment <order_number>", value="Reply ke message customer yang berisi bukti bayar untuk upload payment. Bisa dibatasi via `/setrole`.", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
+    embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `!order` dan `!payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
     embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
     embed.add_field(name="/qrisreset 🔒", value="Hapus konfigurasi QRIS. (Admin only)", inline=False)
     embed.add_field(name="/leaderboardset 🔒", value="Set channel leaderboard. (Admin only)", inline=False)
     embed.add_field(name="/leaderboard-update 🔒", value="Update leaderboard sekarang. (Admin only)", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ── /setrole ───────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="setrole", description="Atur role yang boleh memakai !order dan !payment")
+@app_commands.describe(
+    action="Pilih add, remove, atau clear",
+    role="Role target untuk add/remove"
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="add", value="add"),
+    app_commands.Choice(name="remove", value="remove"),
+    app_commands.Choice(name="clear", value="clear"),
+])
+@app_commands.default_permissions(administrator=True)
+async def set_role(interaction: discord.Interaction, action: app_commands.Choice[str], role: Optional[discord.Role] = None):
+    current_role_ids = get_order_role_ids(interaction.guild.id)
+
+    if action.value in ("add", "remove") and role is None:
+        await interaction.response.send_message("❌ Role wajib dipilih untuk action `add` atau `remove`.", ephemeral=True)
+        return
+
+    if action.value == "clear":
+        set_order_role_config(interaction.guild.id, [])
+        active_roles_text = "Semua member"
+        note_text = "Semua pembatasan role dihapus. Admin tetap selalu bisa memakai command."
+    elif action.value == "add":
+        if role.id not in current_role_ids:
+            current_role_ids.append(role.id)
+        set_order_role_config(interaction.guild.id, current_role_ids)
+        updated_roles = get_order_roles(interaction.guild)
+        active_roles_text = ", ".join(item.mention for item in updated_roles)
+        note_text = f"Role {role.mention} ditambahkan ke daftar akses `!order` dan `!payment`."
+    else:
+        updated_role_ids = [role_id for role_id in current_role_ids if role_id != role.id]
+        set_order_role_config(interaction.guild.id, updated_role_ids)
+        updated_roles = get_order_roles(interaction.guild)
+        active_roles_text = ", ".join(item.mention for item in updated_roles) if updated_roles else "Semua member"
+        if role.id in current_role_ids:
+            note_text = f"Role {role.mention} dihapus dari daftar akses."
+        else:
+            note_text = f"Role {role.mention} sebelumnya memang belum ada di daftar akses."
+
+    embed = discord.Embed(title="✅ Role order/payment berhasil diupdate", color=0x2ECC71)
+    embed.add_field(name="Action", value=action.value, inline=True)
+    embed.add_field(name="Role Aktif", value=active_roles_text, inline=False)
+    embed.add_field(name="Berlaku untuk", value="`!order` dan `!payment`", inline=False)
+    embed.add_field(name="Catatan", value=note_text, inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
