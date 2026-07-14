@@ -1,0 +1,1 @@
+systemctl daemon-reload && systemctl restart qris-bot && systemctl status qris-bot
