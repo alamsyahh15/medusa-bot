@@ -717,10 +717,17 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
     total_price = int(order_data.get("total_price", 0) or 0)
     if guild_config and total_price > 0:
         try:
-            qris_payload = make_dynamic_qris(guild_config["static_qris"], total_price)
-            qris_image = generate_qris_image(qris_payload, total_price, guild_config["merchant_name"])
+            qris_total = apply_admin_fee(total_price)
+            qris_payload = make_dynamic_qris(guild_config["static_qris"], qris_total)
+            qris_image = generate_qris_image(
+                qris_payload,
+                qris_total,
+                guild_config["merchant_name"],
+                original_amount=total_price,
+            )
             qris_file = discord.File(qris_image, filename="order_qris.png")
             embed.set_image(url="attachment://order_qris.png")
+            embed.add_field(name="QRIS Total", value=format_rupiah(qris_total), inline=True)
             await ctx.send(embed=embed, file=qris_file)
             return
         except Exception as e:
