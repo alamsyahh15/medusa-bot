@@ -837,7 +837,12 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
         log_debug("order.invalid_reply", reason="missing_username_field")
         await ctx.send("❌ Username Roblox tidak ditemukan di message `!check`.")
         return
-    if "Available to order robux instant group" not in status:
+    normalized_status = status.lower()
+    is_eligible = (
+        "available to order robux instant group" in normalized_status
+        or "sudah eligible untuk order robux instant group" in normalized_status
+    )
+    if not is_eligible:
         log_debug("order.not_eligible", username=username, status=status)
         await ctx.send("❌ User ini belum eligible untuk order instant group.")
         return
