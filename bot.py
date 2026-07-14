@@ -823,13 +823,16 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
         return
 
     check_embed = replied_message.embeds[0]
-    if check_embed.title != "🔎 Cek Membership Roblox":
-        log_debug("order.invalid_reply", reason="wrong_embed_title", title=check_embed.title)
+    embed_title = check_embed.title or ""
+    username = get_embed_field_value(check_embed, "Username")
+    status = get_embed_field_value(check_embed, "Status") or ""
+    detail_group = get_embed_field_value(check_embed, "Detail Group") or get_embed_field_value(check_embed, "Cek Group") or ""
+    is_check_embed = "Membership Roblox" in embed_title and bool(username) and bool(status) and bool(detail_group)
+    if not is_check_embed:
+        log_debug("order.invalid_reply", reason="not_check_embed", title=embed_title, has_username=bool(username), has_status=bool(status), has_detail_group=bool(detail_group))
         await ctx.send("❌ Reply harus ke message hasil `!check`.")
         return
 
-    username = get_embed_field_value(check_embed, "Username")
-    status = get_embed_field_value(check_embed, "Status") or ""
     if not username:
         log_debug("order.invalid_reply", reason="missing_username_field")
         await ctx.send("❌ Username Roblox tidak ditemukan di message `!check`.")
