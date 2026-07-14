@@ -18,7 +18,7 @@ DISCORD_TOKEN     = os.getenv("DISCORD_TOKEN", "")
 CONFIG_FILE       = "config.json"
 ADMIN_FEE_RATE    = 0.005
 LEADERBOARD_API   = "https://medusablox.com/api/roblox/external/leaderboard"
-ROBLOX_GROUP_ID   = os.getenv("ROBLOX_GROUP_ID", "")
+ROBLOX_GROUP_IDS  = os.getenv("ROBLOX_GROUP_IDS", "")
 ROBLOX_API_KEY    = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
 ROBLOX_EXTERNAL_ORDER_API = os.getenv("ROBLOX_EXTERNAL_ORDER_API", "http://localhost:8000/api/roblox/external/order")
@@ -118,6 +118,14 @@ def make_dynamic_qris(static: str, amount: int) -> str:
 
 def format_rupiah(amount: int) -> str:
     return "Rp {:,.0f}".format(amount).replace(",", ".")
+
+def get_configured_roblox_group_ids():
+    group_ids = []
+    for group_id in ROBLOX_GROUP_IDS.split(","):
+        cleaned = group_id.strip()
+        if cleaned and cleaned not in group_ids:
+            group_ids.append(cleaned)
+    return group_ids
 
 def log_debug(event: str, **kwargs):
     parts = []
@@ -643,9 +651,10 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
         await ctx.send("❌ Format salah. Contoh: `!check username_roblox`")
         return
 
-    if not ROBLOX_GROUP_ID or not ROBLOX_API_KEY:
-        log_debug("check.invalid_config", has_group_id=bool(ROBLOX_GROUP_ID), has_api_key=bool(ROBLOX_API_KEY))
-        await ctx.send("❌ `ROBLOX_GROUP_ID` atau `ROBLOX_API_KEY` belum diset di environment bot.")
+    group_ids = get_configured_roblox_group_ids()
+    if not group_ids or not ROBLOX_API_KEY:
+        log_debug("check.invalid_config", group_count=len(group_ids), has_api_key=bool(ROBLOX_API_KEY))
+        await ctx.send("❌ `ROBLOX_GROUP_IDS` atau `ROBLOX_API_KEY` belum diset di environment bot.")
         return
 
     async with ctx.typing():
@@ -656,21 +665,33 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
                 await ctx.send(f"❌ Username Roblox `{username_roblox}` tidak ditemukan atau terkena filter banned user.")
                 return
 
-            membership = await get_group_membership(bot.http_session, ROBLOX_GROUP_ID, user_data["id"])
-            if not membership:
-                log_debug("check.membership_not_found", username=user_data["name"], user_id=user_data["id"], group_id=ROBLOX_GROUP_ID)
-                await ctx.send(f"❌ `{user_data['name']}` belum ditemukan sebagai member di group target.")
-                return
-
-            create_time_raw = membership.get("createTime")
-            if not create_time_raw:
-                log_debug("check.create_time_missing", username=user_data["name"], user_id=user_data["id"])
-                await ctx.send("❌ Data `createTime` membership tidak ditemukan.")
-                return
-
-            create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
-            available_at = create_time + timedelta(days=3)
             now_utc = datetime.now(timezone.utc)
+            group_results = []
+            for group_id in group_ids:
+                membership = await get_group_membership(bot.http_session, group_id, user_data["id"])
+                if not membership:
+                    log_debug("check.membership_not_found", username=user_data["name"], user_id=user_data["id"], group_id=group_id)
+                    group_results.append({
+                        "group_id": group_id,
+                        "membership_found": False,
+                    })
+                    continue
+
+                create_time_raw = membership.get("createTime")
+                if not create_time_raw:
+                    log_debug("check.create_time_missing", username=user_data["name"], user_id=user_data["id"], group_id=group_id)
+                    await ctx.send(f"❌ Data `createTime` membership tidak ditemukan untuk group `{group_id}`.")
+                    return
+
+                create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
+                available_at = create_time + timedelta(days=3)
+                group_results.append({
+                    "group_id": group_id,
+                    "membership_found": True,
+                    "create_time": create_time,
+                    "available_at": available_at,
+                    "is_ready": now_utc >= available_at,
+                })
         except Exception as e:
             log_debug("check.exception", username=username_roblox, error=str(e))
             await ctx.send(f"❌ Gagal cek membership Roblox: {e}")
@@ -680,17 +701,52 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
     embed.add_field(name="Username", value=user_data["name"], inline=True)
     embed.add_field(name="Display Name", value=user_data.get("displayName", "-"), inline=True)
     embed.add_field(name="User ID", value=str(user_data["id"]), inline=True)
-    embed.add_field(name="Join Group", value=format_datetime_gmt7(create_time), inline=False)
 
-    if now_utc >= available_at:
-        log_debug("check.eligible", username=user_data["name"], user_id=user_data["id"], available_at=format_datetime_gmt7(available_at))
+    group_lines = []
+    all_groups_ready = True
+    latest_available_at = None
+    for index, result in enumerate(group_results, start=1):
+        group_id = result["group_id"]
+        if not result["membership_found"]:
+            all_groups_ready = False
+            group_lines.append(f"Group {index} (`{group_id}`): ❌ Belum join group")
+            continue
+
+        create_time = result["create_time"]
+        available_at = result["available_at"]
+        if latest_available_at is None or available_at > latest_available_at:
+            latest_available_at = available_at
+
+        if result["is_ready"]:
+            group_lines.append(
+                f"Group {index} (`{group_id}`): ✅ Join {format_datetime_gmt7(create_time)}"
+            )
+        else:
+            all_groups_ready = False
+            group_lines.append(
+                f"Group {index} (`{group_id}`): ⏳ Join {format_datetime_gmt7(create_time)} • Eligible {format_datetime_gmt7(available_at)}"
+            )
+
+    embed.add_field(name="Cek Group", value="\n".join(group_lines), inline=False)
+
+    if all_groups_ready and group_results:
+        log_debug("check.eligible", username=user_data["name"], user_id=user_data["id"], group_count=len(group_results))
         embed.add_field(name="Status", value="✅ Available to order robux instant group", inline=False)
         embed.color = 0x2ECC71
     else:
-        log_debug("check.not_eligible", username=user_data["name"], user_id=user_data["id"], available_at=format_datetime_gmt7(available_at))
+        log_debug(
+            "check.not_eligible",
+            username=user_data["name"],
+            user_id=user_data["id"],
+            group_count=len(group_results),
+            latest_available_at=format_datetime_gmt7(latest_available_at) if latest_available_at else "unknown",
+        )
+        status_value = "⏳ Belum eligible di semua group. Semua group harus join minimal 3 hari."
+        if latest_available_at:
+            status_value += f"\nBisa order setelah semua group siap, estimasi **{format_datetime_gmt7(latest_available_at)}**."
         embed.add_field(
             name="Status",
-            value=f"⏳ Belum 3 hari. Bisa order pada **{format_datetime_gmt7(available_at)}**",
+            value=status_value,
             inline=False,
         )
         embed.color = 0xF1C40F
