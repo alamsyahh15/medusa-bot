@@ -847,7 +847,7 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
         for index, group_id in enumerate(missing_group_ids, start=1):
             view.add_item(
                 discord.ui.Button(
-                    label=f"Buka Group {index}",
+                    label=f"Join Group {index}",
                     url=build_roblox_group_share_url(group_id),
                 )
             )
