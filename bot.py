@@ -713,6 +713,19 @@ async def order_prefix(ctx: commands.Context, amount_raw: str = None):
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
 
+    guild_config = get_guild_config(ctx.guild.id) if ctx.guild else None
+    total_price = int(order_data.get("total_price", 0) or 0)
+    if guild_config and total_price > 0:
+        try:
+            qris_payload = make_dynamic_qris(guild_config["static_qris"], total_price)
+            qris_image = generate_qris_image(qris_payload, total_price, guild_config["merchant_name"])
+            qris_file = discord.File(qris_image, filename="order_qris.png")
+            embed.set_image(url="attachment://order_qris.png")
+            await ctx.send(embed=embed, file=qris_file)
+            return
+        except Exception as e:
+            embed.add_field(name="QRIS", value=f"Gagal generate QRIS: `{e}`", inline=False)
+
     await ctx.send(embed=embed)
 
 
