@@ -775,7 +775,7 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
 
     embed = discord.Embed(
         title="🔎 Hasil Cek Membership Roblox",
-        description="Status membership dicek untuk semua group yang wajib dipenuhi sebelum order instant group.",
+        description="User bisa order instant group jika minimal ada satu group yang sudah diikuti selama 3 hari.",
         color=0x1A1F5E,
     )
     embed.add_field(name="Username", value=user_data["name"], inline=True)
@@ -783,13 +783,12 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
     embed.add_field(name="User ID", value=str(user_data["id"]), inline=True)
 
     group_lines = []
-    all_groups_ready = True
-    latest_available_at = None
+    has_ready_group = False
+    earliest_available_at = None
     missing_group_ids = []
     for index, result in enumerate(group_results, start=1):
         group_id = result["group_id"]
         if not result["membership_found"]:
-            all_groups_ready = False
             missing_group_ids.append(group_id)
             group_lines.append(
                 f"**Group {index}** (`{group_id}`)\nBelum join group ini."
@@ -798,24 +797,24 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
 
         create_time = result["create_time"]
         available_at = result["available_at"]
-        if latest_available_at is None or available_at > latest_available_at:
-            latest_available_at = available_at
+        if earliest_available_at is None or available_at < earliest_available_at:
+            earliest_available_at = available_at
 
         if result["is_ready"]:
+            has_ready_group = True
             group_lines.append(
-                f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}."
+                f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nStatus: siap dipakai untuk order."
             )
         else:
-            all_groups_ready = False
             group_lines.append(
                 f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nBisa dipakai untuk order mulai {format_datetime_gmt7(available_at)}."
             )
 
-    if all_groups_ready and group_results:
+    if has_ready_group and group_results:
         log_debug("check.eligible", username=user_data["name"], user_id=user_data["id"], group_count=len(group_results))
         embed.add_field(
             name="Status",
-            value="✅ User ini sudah eligible untuk order robux instant group.",
+            value="✅ User ini sudah eligible untuk order robux instant group karena minimal ada satu group yang sudah 3 hari.",
             inline=False,
         )
         embed.color = 0x2ECC71
@@ -825,13 +824,13 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
             username=user_data["name"],
             user_id=user_data["id"],
             group_count=len(group_results),
-            latest_available_at=format_datetime_gmt7(latest_available_at) if latest_available_at else "unknown",
+            earliest_available_at=format_datetime_gmt7(earliest_available_at) if earliest_available_at else "unknown",
         )
         status_value = "⏳ User ini belum eligible untuk order instant group."
-        if latest_available_at:
-            status_value += f"\nEstimasi paling cepat bisa order: **{format_datetime_gmt7(latest_available_at)}**."
+        if earliest_available_at:
+            status_value += f"\nEstimasi paling cepat bisa order: **{format_datetime_gmt7(earliest_available_at)}**."
         if missing_group_ids:
-            status_value += "\nMasih ada group yang belum di-join."
+            status_value += "\nMasih ada group yang belum di-join, tapi cukup salah satu group yang siap 3 hari."
         embed.add_field(
             name="Status",
             value=status_value,
