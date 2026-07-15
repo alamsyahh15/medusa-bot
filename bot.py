@@ -572,6 +572,12 @@ async def post_or_edit_leaderboard(bot, guild_id: int):
     set_leaderboard_config(guild_id, lb_cfg["channel_id"], msg.id)
     print(f"[Leaderboard] Sent new — guild {guild_id}")
 
+def resolve_leaderboard_channel(channel: app_commands.AppCommandChannel):
+    resolved = channel.resolve()
+    if isinstance(resolved, discord.TextChannel):
+        return resolved
+    return None
+
 
 # ── Bot ────────────────────────────────────────────────────────────────────────
 
@@ -1186,17 +1192,33 @@ async def set_role(interaction: discord.Interaction, action: app_commands.Choice
 @bot.tree.command(name="leaderboardset", description="Set channel untuk auto-update leaderboard (Admin only)")
 @app_commands.describe(channel="Channel tujuan leaderboard")
 @app_commands.default_permissions(administrator=True)
-async def leaderboard_set(interaction: discord.Interaction, channel: discord.TextChannel):
+async def leaderboard_set(interaction: discord.Interaction, channel: app_commands.AppCommandChannel):
+    target_channel = resolve_leaderboard_channel(channel)
+    if target_channel is None:
+        await interaction.response.send_message(
+            "❌ Channel harus berupa text channel biasa, bukan forum, category, atau jenis channel lain.",
+            ephemeral=True,
+        )
+        return
+
     await interaction.response.defer(ephemeral=True)
-    set_leaderboard_config(interaction.guild.id, channel.id, None)
+    permissions = target_channel.permissions_for(interaction.guild.me)
+    if not permissions.view_channel or not permissions.send_messages or not permissions.attach_files:
+        await interaction.followup.send(
+            f"❌ Saya belum punya izin yang cukup di {target_channel.mention}. Pastikan ada izin `View Channel`, `Send Messages`, dan `Attach Files`.",
+            ephemeral=True,
+        )
+        return
+
+    set_leaderboard_config(interaction.guild.id, target_channel.id, None)
     image_bytes = await fetch_and_render_leaderboard(bot.http_session)
     if not image_bytes:
         await interaction.followup.send("❌ Gagal fetch data. Channel disimpan, akan dicoba lagi 5 menit.", ephemeral=True)
         return
-    msg = await channel.send(file=discord.File(image_bytes, filename="leaderboard.png"))
-    set_leaderboard_config(interaction.guild.id, channel.id, msg.id)
+    msg = await target_channel.send(file=discord.File(image_bytes, filename="leaderboard.png"))
+    set_leaderboard_config(interaction.guild.id, target_channel.id, msg.id)
     embed = discord.Embed(title="✅ Leaderboard channel berhasil diset!", color=0x2ECC71)
-    embed.add_field(name="Channel", value=channel.mention, inline=False)
+    embed.add_field(name="Channel", value=target_channel.mention, inline=False)
     embed.add_field(name="Auto-update", value="Setiap 5 menit", inline=False)
     embed.add_field(name="Manual update", value="`/leaderboard-update`", inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
