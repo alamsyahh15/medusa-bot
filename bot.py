@@ -336,19 +336,43 @@ def build_message_search_text(message: discord.Message) -> str:
             parts.append(f"{field.name}\n{field.value}")
     return "\n".join(parts)
 
-def extract_labeled_value(text: str, label: str) -> Optional[str]:
-    import re
+def normalize_label_text(value: str) -> str:
+    cleaned = (value or "").lower()
+    cleaned = cleaned.replace("`", "").replace("*", "").replace("_", "").replace("\u200b", "")
+    cleaned = cleaned.replace(":", " ").replace("-", " ")
+    return " ".join(cleaned.split())
 
-    patterns = [
-        rf"{re.escape(label)}\s*:\s*([^\n\r]+)",
-        rf"{re.escape(label)}\s*\n+\s*([^\n\r]+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            value = match.group(1).strip().strip("`")
-            if value:
-                return value
+def extract_labeled_value(text: str, label: str) -> Optional[str]:
+    lines = [line.strip() for line in (text or "").splitlines()]
+    normalized_label = normalize_label_text(label)
+
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip().strip("`")
+        if not line:
+            continue
+
+        normalized_line = normalize_label_text(line)
+        if normalized_line == normalized_label:
+            for next_line in lines[index + 1:]:
+                candidate = next_line.strip().strip("`")
+                if candidate:
+                    return candidate
+
+        if normalized_line.startswith(normalized_label):
+            if ":" in line:
+                candidate = line.split(":", 1)[1].strip().strip("`")
+                if candidate:
+                    return candidate
+            remainder = normalized_line[len(normalized_label):].strip()
+            if remainder:
+                return remainder
+
+    import re
+    match = re.search(rf"{re.escape(label)}\s*:\s*([^\n\r]+)", text or "", flags=re.IGNORECASE)
+    if match:
+        candidate = match.group(1).strip().strip("`")
+        if candidate:
+            return candidate
     return None
 
 def extract_ticket_identity(message: discord.Message) -> dict:
@@ -358,9 +382,23 @@ def extract_ticket_identity(message: discord.Message) -> dict:
     roblox_username = extract_labeled_value(combined_text, "Username Roblox")
 
     for embed in message.embeds:
-        user_id = user_id or get_embed_field_value(embed, "User ID")
-        user_name = user_name or get_embed_field_value(embed, "User Name")
-        roblox_username = roblox_username or get_embed_field_value(embed, "Username Roblox")
+        for field in embed.fields:
+            normalized_field_name = normalize_label_text(field.name)
+            field_value = (field.value or "").strip().strip("`")
+            if not field_value:
+                continue
+            if not user_id and normalized_field_name == normalize_label_text("User ID"):
+                user_id = field_value
+            if not user_name and normalized_field_name == normalize_label_text("User Name"):
+                user_name = field_value
+            if not roblox_username and normalized_field_name == normalize_label_text("Username Roblox"):
+                roblox_username = field_value
+
+    if not user_id:
+        import re
+        match = re.search(r"\b\d{17,20}\b", combined_text)
+        if match:
+            user_id = match.group(0)
 
     normalized_user_id = None
     if user_id:
