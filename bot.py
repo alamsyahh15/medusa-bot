@@ -24,7 +24,7 @@ ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
 ROBLOX_EXTERNAL_ORDER_API = os.getenv("ROBLOX_EXTERNAL_ORDER_API", "http://localhost:8000/api/roblox/external/order")
 ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API = os.getenv("ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API", "http://localhost:8000/api/roblox/external/order/upload-payment")
 MEDUSABLOX_GUILD_ID = 1479845174430404738
-MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.com/invite/Afs5b76ejR"
+MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.gg/Qm24MCdScV"
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
