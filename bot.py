@@ -1067,13 +1067,13 @@ async def giveaway_prefix(ctx: commands.Context):
         )
     else:
         joined_text = ", ".join(f"`{group_id}`" for group_id in joined_group_ids) if joined_group_ids else "-"
-        missing_text = ", ".join(f"`{group_id}`" for group_id in missing_group_ids) if missing_group_ids else "-"
+        roblox_status_lines = [f"✅ Sudah join: {joined_text}"]
+        if missing_group_ids:
+            missing_text = ", ".join(f"`{group_id}`" for group_id in missing_group_ids)
+            roblox_status_lines.append(f"❌ Belum join: {missing_text}")
         embed.add_field(
             name="Join Group Roblox",
-            value=(
-                f"✅ Sudah join: {joined_text}\n"
-                f"❌ Belum join: {missing_text}"
-            ),
+            value="\n".join(roblox_status_lines),
             inline=False,
         )
 
