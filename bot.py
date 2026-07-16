@@ -23,6 +23,8 @@ ROBLOX_API_KEY    = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
 ROBLOX_EXTERNAL_ORDER_API = os.getenv("ROBLOX_EXTERNAL_ORDER_API", "http://localhost:8000/api/roblox/external/order")
 ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API = os.getenv("ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API", "http://localhost:8000/api/roblox/external/order/upload-payment")
+MEDUSABLOX_GUILD_ID = 1479845174430404738
+MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.com/invite/Afs5b76ejR"
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
@@ -320,6 +322,73 @@ def get_message_image_url(message: discord.Message) -> Optional[str]:
             return embed.thumbnail.url
 
     return None
+
+def build_message_search_text(message: discord.Message) -> str:
+    parts = []
+    if message.content:
+        parts.append(message.content)
+    for embed in message.embeds:
+        if embed.title:
+            parts.append(embed.title)
+        if embed.description:
+            parts.append(embed.description)
+        for field in embed.fields:
+            parts.append(f"{field.name}\n{field.value}")
+    return "\n".join(parts)
+
+def extract_labeled_value(text: str, label: str) -> Optional[str]:
+    import re
+
+    patterns = [
+        rf"{re.escape(label)}\s*:\s*([^\n\r]+)",
+        rf"{re.escape(label)}\s*\n+\s*([^\n\r]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = match.group(1).strip().strip("`")
+            if value:
+                return value
+    return None
+
+def extract_ticket_identity(message: discord.Message) -> dict:
+    combined_text = build_message_search_text(message)
+    user_id = extract_labeled_value(combined_text, "User ID")
+    user_name = extract_labeled_value(combined_text, "User Name")
+    roblox_username = extract_labeled_value(combined_text, "Username Roblox")
+
+    for embed in message.embeds:
+        user_id = user_id or get_embed_field_value(embed, "User ID")
+        user_name = user_name or get_embed_field_value(embed, "User Name")
+        roblox_username = roblox_username or get_embed_field_value(embed, "Username Roblox")
+
+    normalized_user_id = None
+    if user_id:
+        cleaned_user_id = "".join(char for char in user_id if char.isdigit())
+        if cleaned_user_id:
+            normalized_user_id = int(cleaned_user_id)
+
+    return {
+        "discord_user_id": normalized_user_id,
+        "discord_username": user_name.strip() if user_name else None,
+        "roblox_username": roblox_username.strip() if roblox_username else None,
+    }
+
+async def find_member_in_guild(guild_id: int, user_id: int) -> Optional[discord.Member]:
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return None
+
+    member = guild.get_member(user_id)
+    if member:
+        return member
+
+    try:
+        return await guild.fetch_member(user_id)
+    except discord.NotFound:
+        return None
+    except discord.HTTPException:
+        return None
 
 async def lookup_roblox_user(session: aiohttp.ClientSession, username: str) -> Optional[dict]:
     payload = {
@@ -861,6 +930,150 @@ async def check_prefix(ctx: commands.Context, username_roblox: str = None):
     await ctx.send(embed=embed, view=view)
 
 
+@bot.command(name="giveaway")
+async def giveaway_prefix(ctx: commands.Context):
+    log_debug("giveaway.invoked", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None), has_reply=bool(getattr(ctx.message, "reference", None)))
+    reference = ctx.message.reference
+    if not reference or not reference.message_id:
+        await ctx.send("❌ Command ini harus dipakai dengan cara reply ke message pendaftaran giveaway.")
+        return
+
+    try:
+        replied_message = reference.resolved
+        if replied_message is None:
+            replied_message = await ctx.channel.fetch_message(reference.message_id)
+    except Exception:
+        log_debug("giveaway.reply_fetch_failed", message_id=getattr(reference, "message_id", None))
+        await ctx.send("❌ Gagal mengambil message yang direply.")
+        return
+
+    ticket_data = extract_ticket_identity(replied_message)
+    discord_user_id = ticket_data["discord_user_id"]
+    discord_username = ticket_data["discord_username"]
+    roblox_username = ticket_data["roblox_username"]
+    log_debug(
+        "giveaway.ticket_parsed",
+        discord_user_id=discord_user_id,
+        discord_username=discord_username,
+        roblox_username=roblox_username,
+    )
+
+    if not discord_user_id or not roblox_username:
+        await ctx.send(
+            "❌ Data dari message yang direply belum lengkap. Pastikan ada `User ID` dan `Username Roblox`."
+        )
+        return
+
+    group_ids = get_configured_roblox_group_ids()
+    if not group_ids or not ROBLOX_API_KEY:
+        await ctx.send("❌ `ROBLOX_GROUP_IDS` atau `ROBLOX_API_KEY` belum diset di environment bot.")
+        return
+
+    async with ctx.typing():
+        member = await find_member_in_guild(MEDUSABLOX_GUILD_ID, discord_user_id)
+        try:
+            roblox_user = await lookup_roblox_user(bot.http_session, roblox_username)
+        except Exception as e:
+            log_debug("giveaway.roblox_lookup_exception", roblox_username=roblox_username, error=str(e))
+            await ctx.send(f"❌ Gagal cek username Roblox: {e}")
+            return
+
+        group_results = []
+        if roblox_user:
+            for group_id in group_ids:
+                membership = await get_group_membership(bot.http_session, group_id, roblox_user["id"])
+                group_results.append({
+                    "group_id": group_id,
+                    "joined": bool(membership),
+                })
+
+    discord_ok = member is not None
+    roblox_ok = roblox_user is not None
+    joined_group_ids = [item["group_id"] for item in group_results if item["joined"]]
+    missing_group_ids = [item["group_id"] for item in group_results if not item["joined"]]
+    all_groups_joined = roblox_ok and len(group_results) > 0 and not missing_group_ids
+
+    embed = discord.Embed(title="🎁 Hasil Cek Giveaway", color=0x1A1F5E)
+    embed.add_field(name="Discord User ID", value=str(discord_user_id), inline=True)
+    embed.add_field(name="Discord Username", value=discord_username or "-", inline=True)
+    embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
+
+    if discord_ok:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=f"✅ Sudah join guild target.\nMember: {member.mention}",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=f"❌ Belum ditemukan sebagai member guild `{MEDUSABLOX_GUILD_ID}`.",
+            inline=False,
+        )
+
+    if not roblox_ok:
+        embed.add_field(
+            name="Status Roblox",
+            value="❌ Username Roblox tidak ditemukan atau terkena filter banned user.",
+            inline=False,
+        )
+    else:
+        joined_text = ", ".join(f"`{group_id}`" for group_id in joined_group_ids) if joined_group_ids else "-"
+        missing_text = ", ".join(f"`{group_id}`" for group_id in missing_group_ids) if missing_group_ids else "-"
+        embed.add_field(
+            name="Join Group Roblox",
+            value=(
+                f"✅ Sudah join: {joined_text}\n"
+                f"❌ Belum join: {missing_text}"
+            ),
+            inline=False,
+        )
+
+    is_eligible = discord_ok and all_groups_joined
+    if is_eligible:
+        embed.color = 0x2ECC71
+        embed.add_field(
+            name="Status Giveaway",
+            value="✅ Lolos pengecekan giveaway. User sudah join Discord Medusablox dan sudah join semua group Roblox yang diwajibkan.",
+            inline=False,
+        )
+    else:
+        embed.color = 0xE67E22
+        reasons = []
+        if not discord_ok:
+            reasons.append("belum join Discord Medusablox")
+        if not roblox_ok:
+            reasons.append("username Roblox tidak valid")
+        elif missing_group_ids:
+            reasons.append("belum join semua group Roblox yang diwajibkan")
+        reason_text = ", ".join(reasons) if reasons else "syarat belum terpenuhi"
+        embed.add_field(
+            name="Status Giveaway",
+            value=f"⏳ Belum lolos pengecekan giveaway karena {reason_text}.",
+            inline=False,
+        )
+
+    view = None
+    if not discord_ok or missing_group_ids:
+        view = discord.ui.View()
+        if not discord_ok:
+            view.add_item(
+                discord.ui.Button(
+                    label="Join Discord",
+                    url=MEDUSABLOX_DISCORD_INVITE_URL,
+                )
+            )
+        for index, group_id in enumerate(missing_group_ids, start=1):
+            view.add_item(
+                discord.ui.Button(
+                    label=f"Join Group {index}",
+                    url=build_roblox_group_share_url(group_id),
+                )
+            )
+
+    await ctx.send(embed=embed, view=view)
+
+
 @bot.command(name="order")
 async def order_prefix(ctx: commands.Context, amount_raw: str = None):
     log_debug("order.invoked", author=getattr(ctx.author, "id", None), guild=getattr(ctx.guild, "id", None), amount_raw=amount_raw, has_reply=bool(getattr(ctx.message, "reference", None)))
@@ -1126,6 +1339,7 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
     embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds` atau `!calc 100rb gig`", inline=False)
     embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
+    embed.add_field(name="!giveaway", value="Reply ke message pendaftaran giveaway untuk cek member Discord Medusablox dan join group Roblox.", inline=False)
     embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux. Bisa dibatasi via `/setrole`.", inline=False)
     embed.add_field(name="!payment <order_number>", value="Reply ke message customer yang berisi bukti bayar untuk upload payment. Bisa dibatasi via `/setrole`.", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
