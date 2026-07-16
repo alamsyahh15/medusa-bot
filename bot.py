@@ -352,6 +352,20 @@ def normalize_label_text(value: str) -> str:
     cleaned = cleaned.replace(":", " ").replace("-", " ")
     return " ".join(cleaned.split())
 
+def sanitize_roblox_username(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+
+    cleaned = value.strip().strip("`").strip()
+    cleaned = cleaned.replace("\u200b", "").replace("\u200e", "").replace("\u200f", "")
+    cleaned = cleaned.replace("*", "").replace("_ _", "")
+
+    import re
+    match = re.search(r"[A-Za-z0-9_]{3,20}", cleaned)
+    if match:
+        return match.group(0)
+    return cleaned or None
+
 def extract_labeled_value(text: str, label: str) -> Optional[str]:
     lines = [line.strip() for line in (text or "").splitlines()]
     normalized_label = normalize_label_text(label)
@@ -419,7 +433,7 @@ def extract_ticket_identity(message: discord.Message) -> dict:
     return {
         "discord_user_id": normalized_user_id,
         "discord_username": user_name.strip() if user_name else None,
-        "roblox_username": roblox_username.strip() if roblox_username else None,
+        "roblox_username": sanitize_roblox_username(roblox_username),
     }
 
 async def find_member_in_guild(guild_id: int, user_id: int) -> Optional[discord.Member]:
