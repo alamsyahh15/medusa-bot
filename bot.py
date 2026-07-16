@@ -86,6 +86,16 @@ def set_leaderboard_config(guild_id: int, channel_id: int, message_id: int = Non
         config[str(guild_id)]["lb_message_id"] = message_id
     save_config(config)
 
+def delete_leaderboard_config(guild_id: int):
+    config = load_config()
+    guild_key = str(guild_id)
+    if guild_key in config:
+        config[guild_key].pop("lb_channel_id", None)
+        config[guild_key].pop("lb_message_id", None)
+        if not config[guild_key]:
+            del config[guild_key]
+        save_config(config)
+
 def get_leaderboard_config(guild_id: int) -> Optional[dict]:
     cfg = load_config().get(str(guild_id), {})
     channel_id = cfg.get("lb_channel_id")
@@ -1385,7 +1395,7 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
     embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
     embed.add_field(name="/qrisreset 🔒", value="Hapus konfigurasi QRIS. (Admin only)", inline=False)
-    embed.add_field(name="/leaderboardset 🔒", value="Set channel leaderboard. (Admin only)", inline=False)
+    embed.add_field(name="/leaderboardset 🔒", value="Set atau remove channel leaderboard. (Admin only)", inline=False)
     embed.add_field(name="/leaderboard-update 🔒", value="Update leaderboard sekarang. (Admin only)", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1441,10 +1451,51 @@ async def set_role(interaction: discord.Interaction, action: app_commands.Choice
 
 # ── /leaderboardset ────────────────────────────────────────────────────────────
 
-@bot.tree.command(name="leaderboardset", description="Set channel untuk auto-update leaderboard (Admin only)")
-@app_commands.describe(channel="Channel tujuan leaderboard")
+@bot.tree.command(name="leaderboardset", description="Set atau remove channel auto-update leaderboard (Admin only)")
+@app_commands.describe(
+    channel="Channel tujuan leaderboard",
+    action="Pilih set atau remove",
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="set", value="set"),
+    app_commands.Choice(name="remove", value="remove"),
+])
 @app_commands.default_permissions(administrator=True)
-async def leaderboard_set(interaction: discord.Interaction, channel: app_commands.AppCommandChannel):
+async def leaderboard_set(
+    interaction: discord.Interaction,
+    channel: Optional[app_commands.AppCommandChannel] = None,
+    action: Optional[app_commands.Choice[str]] = None,
+):
+    action_value = action.value if action else "set"
+
+    if action_value == "remove":
+        current_config = get_leaderboard_config(interaction.guild.id)
+        if not current_config:
+            await interaction.response.send_message(
+                "⚠️ Channel leaderboard belum pernah diset.",
+                ephemeral=True,
+            )
+            return
+
+        delete_leaderboard_config(interaction.guild.id)
+        old_channel = interaction.guild.get_channel(current_config["channel_id"])
+        embed = discord.Embed(title="🗑️ Leaderboard channel berhasil dihapus", color=0xE67E22)
+        embed.add_field(
+            name="Channel Sebelumnya",
+            value=old_channel.mention if old_channel else str(current_config["channel_id"]),
+            inline=False,
+        )
+        embed.add_field(name="Status", value="Auto-update leaderboard dimatikan untuk server ini.", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    if channel is None:
+        await interaction.response.send_message(
+            "❌ Untuk action `set`, pilih text channel tujuan leaderboard.",
+            ephemeral=True,
+        )
+        return
+
     target_channel = resolve_leaderboard_channel(channel)
     if target_channel is None:
         await interaction.response.send_message(
