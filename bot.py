@@ -29,12 +29,14 @@ CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
     "gig": 115000,
+    "send": 143000,
 }
 CALC_MIN_ROBUX = 125
 CALC_TYPE_LABELS = {
     "group": "Group Funds",
     "gamepass": "Gamepass",
     "gig": "Gig",
+    "send": "Send",
 }
 # ─────────────────────────────────────────
 
@@ -238,6 +240,7 @@ def normalize_calc_type(raw_type: str = None) -> Optional[str]:
         "gamepass": "gamepass",
         "gp": "gamepass",
         "gig": "gig",
+        "send": "send",
     }
     return aliases.get(raw_type.lower().replace(" ", "").replace("-", ""))
 
@@ -272,7 +275,7 @@ def build_calc_usage_embed() -> discord.Embed:
     )
     embed.add_field(
         name="Tipe yang didukung",
-        value="`group/groupfund/gf`, `gamepass/gp`, `gig`",
+        value="`group/groupfund/gf`, `gamepass/gp`, `gig`, `send`",
         inline=False,
     )
     embed.add_field(
@@ -280,7 +283,8 @@ def build_calc_usage_embed() -> discord.Embed:
         value=(
             "`group` = Rp 138.000 / 1.000 Robux\n"
             "`gamepass` = Rp 128.000 / 1.000 Robux\n"
-            "`gig` = Rp 115.000 / 1.000 Robux"
+            "`gig` = Rp 115.000 / 1.000 Robux\n"
+            "`send` = Rp 143.000 / 1.000 Robux"
         ),
         inline=False,
     )
@@ -808,7 +812,7 @@ async def calc_prefix(ctx: commands.Context, value_raw: str = None, type_raw: st
 
     calc_type = normalize_calc_type(type_raw)
     if not calc_type:
-        await ctx.send("❌ Type tidak valid. Gunakan `group/groupfund/gf`, `gamepass/gp`, atau `gig`.")
+        await ctx.send("❌ Type tidak valid. Gunakan `group/groupfund/gf`, `gamepass/gp`, `gig`, atau `send`.")
         return
 
     parsed = parse_calc_value(value_raw)
@@ -1399,7 +1403,7 @@ async def qris_reset(interaction: discord.Interaction):
 async def qris_help(interaction: discord.Interaction):
     embed = discord.Embed(title="📖 QRIS Bot — Bantuan", color=0x1A1F5E)
     embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
-    embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds` atau `!calc 100rb gig`", inline=False)
+    embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds`, `!calc 100rb gig`, atau `!calc 15k send`", inline=False)
     embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
     embed.add_field(name="!giveaway", value="Reply ke message pendaftaran giveaway untuk cek member Discord Medusablox dan join group Roblox.", inline=False)
     embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux. Bisa dibatasi via `/setrole`.", inline=False)
