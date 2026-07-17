@@ -29,6 +29,7 @@ MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.gg/Qm24MCdScV"
 SLASH_SYNC_COOLDOWN_SECONDS = int(os.getenv("SLASH_SYNC_COOLDOWN_SECONDS", "900"))
 FORCE_SLASH_SYNC = os.getenv("FORCE_SLASH_SYNC", "0") == "1"
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
+ENABLE_MEMBERS_INTENT = os.getenv("ENABLE_MEMBERS_INTENT", "0") == "1"
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
@@ -471,21 +472,25 @@ def extract_ticket_identity(message: discord.Message) -> dict:
         "roblox_username": sanitize_roblox_username(roblox_username),
     }
 
-async def find_member_in_guild(guild_id: int, user_id: int) -> Optional[discord.Member]:
+async def find_member_in_guild(guild_id: int, user_id: int):
     guild = bot.get_guild(guild_id)
     if guild is None:
-        return None
+        return "unknown", None
 
-    member = guild.get_member(user_id)
-    if member:
-        return member
+    if ENABLE_MEMBERS_INTENT:
+        member = guild.get_member(user_id)
+        if member:
+            return "found", member
 
     try:
-        return await guild.fetch_member(user_id)
+        member = await guild.fetch_member(user_id)
+        return "found", member
     except discord.NotFound:
-        return None
+        return "not_found", None
+    except discord.Forbidden:
+        return "unknown", None
     except discord.HTTPException:
-        return None
+        return "unknown", None
 
 async def lookup_roblox_user(session: aiohttp.ClientSession, username: str) -> Optional[dict]:
     payload = {
@@ -765,7 +770,7 @@ def resolve_leaderboard_channel(channel: app_commands.AppCommandChannel):
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members = ENABLE_MEMBERS_INTENT
 
 class QRISBot(commands.Bot):
     def __init__(self):
@@ -1091,7 +1096,13 @@ async def giveaway_prefix(ctx: commands.Context):
         return
 
     async with ctx.typing():
-        member = await find_member_in_guild(MEDUSABLOX_GUILD_ID, discord_user_id)
+        discord_member_status, member = await find_member_in_guild(MEDUSABLOX_GUILD_ID, discord_user_id)
+        log_debug(
+            "giveaway.discord_member_checked",
+            discord_user_id=discord_user_id,
+            status=discord_member_status,
+            members_intent=ENABLE_MEMBERS_INTENT,
+        )
         try:
             roblox_user = await lookup_roblox_user(bot.http_session, roblox_username)
         except Exception as e:
@@ -1108,7 +1119,8 @@ async def giveaway_prefix(ctx: commands.Context):
                     "joined": bool(membership),
                 })
 
-    discord_ok = member is not None
+    discord_ok = discord_member_status == "found"
+    discord_unknown = discord_member_status == "unknown"
     roblox_ok = roblox_user is not None
     joined_group_ids = [item["group_id"] for item in group_results if item["joined"]]
     missing_group_ids = [item["group_id"] for item in group_results if not item["joined"]]
@@ -1123,6 +1135,15 @@ async def giveaway_prefix(ctx: commands.Context):
         embed.add_field(
             name="Member Discord Medusablox",
             value=f"✅ Sudah join guild target.\nMember: {member.mention}",
+            inline=False,
+        )
+    elif discord_unknown:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=(
+                "⚠️ Belum bisa diverifikasi otomatis saat ini.\n"
+                "Bot tetap berjalan tanpa `Server Members Intent`, jadi status join Discord perlu dicek manual sementara review intent masih berlangsung."
+            ),
             inline=False,
         )
     else:
@@ -1161,7 +1182,9 @@ async def giveaway_prefix(ctx: commands.Context):
     else:
         embed.color = 0xE67E22
         reasons = []
-        if not discord_ok:
+        if discord_unknown:
+            reasons.append("status member Discord belum bisa diverifikasi otomatis")
+        elif not discord_ok:
             reasons.append("belum join Discord Medusablox")
         if not roblox_ok:
             reasons.append("username Roblox tidak valid")
@@ -1175,9 +1198,9 @@ async def giveaway_prefix(ctx: commands.Context):
         )
 
     view = None
-    if not discord_ok or missing_group_ids:
+    if (not discord_ok and not discord_unknown) or missing_group_ids:
         view = discord.ui.View()
-        if not discord_ok:
+        if not discord_ok and not discord_unknown:
             view.add_item(
                 discord.ui.Button(
                     label="Join Discord",
