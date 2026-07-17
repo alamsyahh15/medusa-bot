@@ -765,6 +765,7 @@ def resolve_leaderboard_channel(channel: app_commands.AppCommandChannel):
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 class QRISBot(commands.Bot):
     def __init__(self):
