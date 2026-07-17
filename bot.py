@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+import asyncio
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -27,6 +28,7 @@ MEDUSABLOX_GUILD_ID = 1479845174430404738
 MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.gg/Qm24MCdScV"
 SLASH_SYNC_COOLDOWN_SECONDS = int(os.getenv("SLASH_SYNC_COOLDOWN_SECONDS", "900"))
 FORCE_SLASH_SYNC = os.getenv("FORCE_SLASH_SYNC", "0") == "1"
+HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
@@ -490,11 +492,19 @@ async def lookup_roblox_user(session: aiohttp.ClientSession, username: str) -> O
         "usernames": [username],
         "excludeBannedUsers": True,
     }
-    async with session.post(ROBLOX_USER_LOOKUP_API, json=payload) as resp:
-        log_debug("lookup_roblox_user.response", username=username, status=resp.status)
-        if resp.status != 200:
-            return None
-        data = await resp.json()
+    log_debug("lookup_roblox_user.request", username=username, url=ROBLOX_USER_LOOKUP_API)
+    try:
+        async with session.post(ROBLOX_USER_LOOKUP_API, json=payload) as resp:
+            log_debug("lookup_roblox_user.response", username=username, status=resp.status)
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+    except asyncio.TimeoutError:
+        log_debug("lookup_roblox_user.timeout", username=username, timeout=HTTP_TIMEOUT_SECONDS)
+        raise RuntimeError(f"Request lookup Roblox timeout setelah {HTTP_TIMEOUT_SECONDS} detik")
+    except aiohttp.ClientError as e:
+        log_debug("lookup_roblox_user.client_error", username=username, error=str(e))
+        raise RuntimeError(f"Gagal request lookup Roblox: {e}")
 
     users = data.get("data") or []
     if not users:
@@ -506,11 +516,19 @@ async def get_group_membership(session: aiohttp.ClientSession, group_id: str, us
     params = {"filter": f"user == 'users/{user_id}'"}
     url = f"https://apis.roblox.com/cloud/v2/groups/{group_id}/memberships"
 
-    async with session.get(url, headers=headers, params=params) as resp:
-        log_debug("get_group_membership.response", group_id=group_id, user_id=user_id, status=resp.status)
-        if resp.status != 200:
-            return None
-        data = await resp.json()
+    log_debug("get_group_membership.request", group_id=group_id, user_id=user_id, url=url)
+    try:
+        async with session.get(url, headers=headers, params=params) as resp:
+            log_debug("get_group_membership.response", group_id=group_id, user_id=user_id, status=resp.status)
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+    except asyncio.TimeoutError:
+        log_debug("get_group_membership.timeout", group_id=group_id, user_id=user_id, timeout=HTTP_TIMEOUT_SECONDS)
+        raise RuntimeError(f"Request group membership timeout setelah {HTTP_TIMEOUT_SECONDS} detik")
+    except aiohttp.ClientError as e:
+        log_debug("get_group_membership.client_error", group_id=group_id, user_id=user_id, error=str(e))
+        raise RuntimeError(f"Gagal request group membership: {e}")
 
     memberships = data.get("groupMemberships") or []
     if not memberships:
@@ -754,7 +772,8 @@ class QRISBot(commands.Bot):
         self.http_session: aiohttp.ClientSession = None
 
     async def setup_hook(self):
-        self.http_session = aiohttp.ClientSession()
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        self.http_session = aiohttp.ClientSession(timeout=timeout)
         should_sync, remaining_seconds = should_sync_slash_commands()
         if not should_sync:
             print(f"⏭️ Slash command sync dilewati untuk hindari rate limit. Coba lagi dalam {remaining_seconds} detik.")
