@@ -34,7 +34,7 @@ CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
     "gig": 115000,
-    "send": 140000,
+    "send": 143000,
 }
 CALC_MIN_ROBUX = 125
 CALC_TYPE_ORDER = ["group", "gamepass", "gig", "send"]
@@ -366,7 +366,7 @@ def build_calc_usage_embed() -> discord.Embed:
             "`Instant Group` = Rp 138.000 / 1.000 Robux\n"
             "`Gamepass` = Rp 128.000 / 1.000 Robux\n"
             "`Gig` = Rp 115.000 / 1.000 Robux\n"
-            "`Send` = Rp 140.000 / 1.000 Robux"
+            "`Send` = Rp 143.000 / 1.000 Robux"
         ),
         inline=False,
     )
