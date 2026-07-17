@@ -34,14 +34,21 @@ CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
     "gig": 115000,
-    "send": 143000,
+    "send": 140000,
 }
 CALC_MIN_ROBUX = 125
+CALC_TYPE_ORDER = ["group", "gamepass", "gig", "send"]
 CALC_TYPE_LABELS = {
-    "group": "Group Funds",
+    "group": "Instant Group",
     "gamepass": "Gamepass",
     "gig": "Gig",
     "send": "Send",
+}
+CALC_TYPE_ICONS = {
+    "group": "💎",
+    "gamepass": "🎫",
+    "gig": "🎁",
+    "send": "✈️",
 }
 # ─────────────────────────────────────────
 
@@ -341,34 +348,68 @@ def parse_calc_value(raw_value: str):
     return None
 
 def build_calc_usage_embed() -> discord.Embed:
-    embed = discord.Embed(title="🧮 Robux Calc", color=0x1A1F5E)
+    embed = discord.Embed(title="🧮 Kalkulator Harga", color=0x1A1F5E)
     embed.description = (
         "**Robux -> IDR**\n"
-        "`!calc <robux> [type]`\n\n"
+        "`!calc <robux>`\n\n"
         "**IDR -> Robux**\n"
-        "`!calc <amount>rb [type]`"
+        "`!calc <amount>rb`"
     )
     embed.add_field(
-        name="Tipe yang didukung",
-        value="`group/groupfund/gf`, `gamepass/gp`, `gig`, `send`",
+        name="Metode yang dihitung",
+        value="`Instant Group`, `Gamepass`, `Gig`, `Send`",
         inline=False,
     )
     embed.add_field(
         name="Rate",
         value=(
-            "`group` = Rp 138.000 / 1.000 Robux\n"
-            "`gamepass` = Rp 128.000 / 1.000 Robux\n"
-            "`gig` = Rp 115.000 / 1.000 Robux\n"
-            "`send` = Rp 143.000 / 1.000 Robux"
+            "`Instant Group` = Rp 138.000 / 1.000 Robux\n"
+            "`Gamepass` = Rp 128.000 / 1.000 Robux\n"
+            "`Gig` = Rp 115.000 / 1.000 Robux\n"
+            "`Send` = Rp 140.000 / 1.000 Robux"
         ),
         inline=False,
     )
     embed.add_field(
         name="Contoh",
-        value="`!calc 15k groupfunds`\n`!calc 100rb gig`\n`!calc 50rb gamepass`",
+        value="`!calc 500`\n`!calc 15k`\n`!calc 100rb`",
         inline=False,
     )
-    embed.set_footer(text=f"Tipe default: group • Minimum: {CALC_MIN_ROBUX} Robux")
+    embed.set_footer(text=f"Semua metode dihitung sekaligus • Minimum: {CALC_MIN_ROBUX} Robux")
+    return embed
+
+def build_calc_result_embed(calc_mode: str, amount: int) -> discord.Embed:
+    if calc_mode == "robux":
+        embed = discord.Embed(title="🧮 Kalkulator Harga", color=0x2ECC71)
+        embed.description = f"**{amount:,} Robux -> IDR**".replace(",", ".")
+        result_lines = []
+        for calc_type in CALC_TYPE_ORDER:
+            rate = CALC_RATES[calc_type]
+            total_idr = math.ceil(amount * rate / 1000)
+            rate_per_robux = math.ceil(rate / 1000)
+            result_lines.append(
+                f"{CALC_TYPE_ICONS[calc_type]} **{CALC_TYPE_LABELS[calc_type]}**\n"
+                f"**{format_rupiah(total_idr)}** (`Rp{rate_per_robux}/Robux`)"
+            )
+        embed.add_field(name="Hasil", value="\n\n".join(result_lines), inline=False)
+        embed.set_footer(text="Perhitungan IDR dibulatkan ke atas.")
+        return embed
+
+    embed = discord.Embed(title="🧮 Kalkulator Harga", color=0x3498DB)
+    embed.description = f"**{format_rupiah(amount)} -> Robux**"
+    result_lines = []
+    for calc_type in CALC_TYPE_ORDER:
+        rate = CALC_RATES[calc_type]
+        total_robux = math.floor(amount * 1000 / rate)
+        suffix = ""
+        if total_robux < CALC_MIN_ROBUX:
+            suffix = f" • minimum {CALC_MIN_ROBUX}"
+        result_lines.append(
+            f"{CALC_TYPE_ICONS[calc_type]} **{CALC_TYPE_LABELS[calc_type]}**\n"
+            f"**{total_robux:,} Robux**{suffix}".replace(",", ".")
+        )
+    embed.add_field(name="Hasil", value="\n\n".join(result_lines), inline=False)
+    embed.set_footer(text="Estimasi Robux dibulatkan ke bawah.")
     return embed
 
 def format_datetime_gmt7(dt_utc: datetime) -> str:
@@ -908,19 +949,14 @@ async def qris_prefix(ctx: commands.Context, amount_raw: str = None):
 
 
 @bot.command(name="calc")
-async def calc_prefix(ctx: commands.Context, value_raw: str = None, type_raw: str = None):
+async def calc_prefix(ctx: commands.Context, value_raw: str = None, _type_raw: str = None):
     if value_raw is None:
         await ctx.send(embed=build_calc_usage_embed())
         return
 
-    calc_type = normalize_calc_type(type_raw)
-    if not calc_type:
-        await ctx.send("❌ Type tidak valid. Gunakan `group/groupfund/gf`, `gamepass/gp`, `gig`, atau `send`.")
-        return
-
     parsed = parse_calc_value(value_raw)
     if not parsed:
-        await ctx.send("❌ Format tidak valid. Contoh: `!calc 15k groupfunds`, `!calc 100rb gig`, `!calc 50rb gamepass`")
+        await ctx.send("❌ Format tidak valid. Contoh: `!calc 500`, `!calc 15k`, atau `!calc 100rb`")
         return
 
     calc_mode, amount = parsed
@@ -928,39 +964,11 @@ async def calc_prefix(ctx: commands.Context, value_raw: str = None, type_raw: st
         await ctx.send("❌ Nilai harus lebih dari 0.")
         return
 
-    rate = CALC_RATES[calc_type]
-    type_label = CALC_TYPE_LABELS[calc_type]
-    rate_label = f"{format_rupiah(rate)} / 1.000 Robux"
-
     if calc_mode == "robux":
         if amount < CALC_MIN_ROBUX:
             await ctx.send(f"❌ Minimum kalkulasi adalah **{CALC_MIN_ROBUX} Robux**.")
             return
-        total_idr = math.ceil(amount * rate / 1000)
-        embed = discord.Embed(title="💰 Robux Calc", color=0x2ECC71)
-        embed.add_field(name="Input", value=f"**{amount:,} Robux**".replace(",", "."), inline=False)
-        embed.add_field(name="Type", value=type_label, inline=True)
-        embed.add_field(name="Rate", value=rate_label, inline=True)
-        embed.add_field(name="Hasil", value=f"**{format_rupiah(total_idr)}**", inline=False)
-        embed.set_footer(text="Perhitungan IDR dibulatkan ke atas.")
-        await ctx.send(embed=embed)
-        return
-
-    total_robux = math.floor(amount * 1000 / rate)
-    if total_robux < CALC_MIN_ROBUX:
-        min_idr = math.ceil(CALC_MIN_ROBUX * rate / 1000)
-        await ctx.send(
-            f"❌ Minimum kalkulasi adalah **{CALC_MIN_ROBUX} Robux**. "
-            f"Untuk type **{type_label}**, minimal input adalah **{format_rupiah(min_idr)}**."
-        )
-        return
-    embed = discord.Embed(title="💵 IDR -> Robux Calc", color=0x3498DB)
-    embed.add_field(name="Input", value=f"**{format_rupiah(amount)}**", inline=False)
-    embed.add_field(name="Type", value=type_label, inline=True)
-    embed.add_field(name="Rate", value=rate_label, inline=True)
-    embed.add_field(name="Hasil", value=f"**{total_robux:,} Robux**".replace(",", "."), inline=False)
-    embed.set_footer(text="Estimasi Robux dibulatkan ke bawah.")
-    await ctx.send(embed=embed)
+    await ctx.send(embed=build_calc_result_embed(calc_mode, amount))
 
 
 @bot.command(name="check")
@@ -1524,7 +1532,7 @@ async def qris_reset(interaction: discord.Interaction):
 async def qris_help(interaction: discord.Interaction):
     embed = discord.Embed(title="📖 QRIS Bot — Bantuan", color=0x1A1F5E)
     embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
-    embed.add_field(name="!calc <nilai> [type]", value="Kalkulasi Robux/IDR. Contoh: `!calc 15k groupfunds`, `!calc 100rb gig`, atau `!calc 15k send`", inline=False)
+    embed.add_field(name="!calc <nilai>", value="Kalkulasi Robux/IDR untuk semua metode sekaligus. Contoh: `!calc 500`, `!calc 15k`, atau `!calc 100rb`", inline=False)
     embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
     embed.add_field(name="!giveaway", value="Reply ke message pendaftaran giveaway untuk cek member Discord Medusablox dan join group Roblox.", inline=False)
     embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux. Bisa dibatasi via `/setrole`.", inline=False)
