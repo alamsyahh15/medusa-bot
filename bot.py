@@ -249,6 +249,39 @@ async def ensure_order_command_access(ctx: commands.Context) -> bool:
         await ctx.send("❌ Command ini tidak bisa dipakai saat ini.")
     return False
 
+async def send_interaction_message(
+    interaction: discord.Interaction,
+    content: str = None,
+    embed: discord.Embed = None,
+    view: discord.ui.View = None,
+    file: discord.File = None,
+    ephemeral: bool = False,
+):
+    if interaction.response.is_done():
+        await interaction.followup.send(content=content, embed=embed, view=view, file=file, ephemeral=ephemeral)
+        return
+    await interaction.response.send_message(content=content, embed=embed, view=view, file=file, ephemeral=ephemeral)
+
+async def ensure_order_interaction_access(interaction: discord.Interaction) -> bool:
+    member = interaction.user
+    guild = interaction.guild
+    if not guild or not isinstance(member, discord.Member):
+        await send_interaction_message(interaction, "❌ Command ini hanya bisa dipakai di server.", ephemeral=True)
+        return False
+    allowed_roles = get_order_roles(guild)
+    if can_use_order_commands(member, guild):
+        return True
+    if allowed_roles:
+        role_mentions = ", ".join(role.mention for role in allowed_roles)
+        await send_interaction_message(
+            interaction,
+            f"❌ Command ini hanya bisa dipakai role {role_mentions} atau admin.",
+            ephemeral=True,
+        )
+    else:
+        await send_interaction_message(interaction, "❌ Command ini tidak bisa dipakai saat ini.", ephemeral=True)
+    return False
+
 def log_debug(event: str, **kwargs):
     parts = []
     for key, value in kwargs.items():
@@ -1486,6 +1519,10 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="!giveaway", value="Reply ke message pendaftaran giveaway untuk cek member Discord Medusablox dan join group Roblox.", inline=False)
     embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux. Bisa dibatasi via `/setrole`.", inline=False)
     embed.add_field(name="!payment <order_number>", value="Reply ke message customer yang berisi bukti bayar untuk upload payment. Bisa dibatasi via `/setrole`.", inline=False)
+    embed.add_field(name="/check", value="Versi slash dari cek Roblox. Contoh: `/check username_roblox`", inline=False)
+    embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway tanpa reply command.", inline=False)
+    embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
+    embed.add_field(name="/payment", value="Upload bukti bayar via slash dengan attachment. Contoh: `/payment order_number image`", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
     embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `!order` dan `!payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
@@ -1494,6 +1531,428 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="/leaderboardset 🔒", value="Set atau remove channel leaderboard. (Admin only)", inline=False)
     embed.add_field(name="/leaderboard-update 🔒", value="Update leaderboard sekarang. (Admin only)", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ── Slash Commands Tambahan ────────────────────────────────────────────────────
+
+@bot.tree.command(name="check", description="Cek apakah user Roblox sudah eligible order instant group")
+@app_commands.describe(username_roblox="Username Roblox yang mau dicek")
+async def check_slash(interaction: discord.Interaction, username_roblox: str):
+    username_roblox = sanitize_roblox_username(username_roblox) or username_roblox.strip()
+    log_debug("check.slash_invoked", author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None), username=username_roblox)
+    if not username_roblox:
+        log_debug("check.slash_invalid_usage", reason="missing_username")
+        await interaction.response.send_message("❌ Username Roblox wajib diisi.", ephemeral=True)
+        return
+
+    group_ids = get_configured_roblox_group_ids()
+    if not group_ids or not ROBLOX_API_KEY:
+        log_debug("check.slash_invalid_config", group_count=len(group_ids), has_api_key=bool(ROBLOX_API_KEY))
+        await interaction.response.send_message("❌ `ROBLOX_GROUP_IDS` atau `ROBLOX_API_KEY` belum diset di environment bot.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    try:
+        user_data = await lookup_roblox_user(bot.http_session, username_roblox)
+        if not user_data:
+            log_debug("check.slash_user_not_found", username=username_roblox)
+            await interaction.followup.send(f"❌ Username Roblox `{username_roblox}` tidak ditemukan atau terkena filter banned user.")
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        group_results = []
+        for group_id in group_ids:
+            membership = await get_group_membership(bot.http_session, group_id, user_data["id"])
+            if not membership:
+                log_debug("check.slash_membership_not_found", username=user_data["name"], user_id=user_data["id"], group_id=group_id)
+                group_results.append({
+                    "group_id": group_id,
+                    "membership_found": False,
+                })
+                continue
+
+            create_time_raw = membership.get("createTime")
+            if not create_time_raw:
+                log_debug("check.slash_create_time_missing", username=user_data["name"], user_id=user_data["id"], group_id=group_id)
+                await interaction.followup.send(f"❌ Data `createTime` membership tidak ditemukan untuk group `{group_id}`.")
+                return
+
+            create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
+            available_at = create_time + timedelta(days=3)
+            group_results.append({
+                "group_id": group_id,
+                "membership_found": True,
+                "create_time": create_time,
+                "available_at": available_at,
+                "is_ready": now_utc >= available_at,
+            })
+    except Exception as e:
+        log_debug("check.slash_exception", username=username_roblox, error=str(e))
+        await interaction.followup.send(f"❌ Gagal cek membership Roblox: {e}")
+        return
+
+    embed = discord.Embed(
+        title="🔎 Hasil Cek Membership Roblox",
+        description="User bisa order instant group jika minimal ada satu group yang sudah diikuti selama 3 hari.",
+        color=0x1A1F5E,
+    )
+    embed.add_field(name="Username", value=user_data["name"], inline=True)
+    embed.add_field(name="Display Name", value=user_data.get("displayName", "-"), inline=True)
+    embed.add_field(name="User ID", value=str(user_data["id"]), inline=True)
+
+    group_lines = []
+    has_ready_group = False
+    earliest_available_at = None
+    missing_group_ids = []
+    for index, result in enumerate(group_results, start=1):
+        group_id = result["group_id"]
+        if not result["membership_found"]:
+            missing_group_ids.append(group_id)
+            group_lines.append(f"**Group {index}** (`{group_id}`)\nBelum join group ini.")
+            continue
+
+        create_time = result["create_time"]
+        available_at = result["available_at"]
+        if earliest_available_at is None or available_at < earliest_available_at:
+            earliest_available_at = available_at
+
+        if result["is_ready"]:
+            has_ready_group = True
+            group_lines.append(
+                f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nStatus: siap dipakai untuk order."
+            )
+        else:
+            group_lines.append(
+                f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nBisa dipakai untuk order mulai {format_datetime_gmt7(available_at)}."
+            )
+
+    if has_ready_group and group_results:
+        log_debug("check.slash_eligible", username=user_data["name"], user_id=user_data["id"], group_count=len(group_results))
+        embed.add_field(
+            name="Status",
+            value="✅ User ini sudah eligible untuk order robux instant group karena minimal ada satu group yang sudah 3 hari.",
+            inline=False,
+        )
+        embed.color = 0x2ECC71
+    else:
+        log_debug(
+            "check.slash_not_eligible",
+            username=user_data["name"],
+            user_id=user_data["id"],
+            group_count=len(group_results),
+            earliest_available_at=format_datetime_gmt7(earliest_available_at) if earliest_available_at else "unknown",
+        )
+        status_value = "⏳ User ini belum eligible untuk order instant group."
+        if earliest_available_at:
+            status_value += f"\nEstimasi paling cepat bisa order: **{format_datetime_gmt7(earliest_available_at)}**."
+        if missing_group_ids:
+            status_value += "\nMasih ada group yang belum di-join, tapi cukup salah satu group yang siap 3 hari."
+        embed.add_field(name="Status", value=status_value, inline=False)
+        embed.color = 0xF1C40F
+
+    embed.add_field(name="Detail Group", value="\n\n".join(group_lines), inline=False)
+
+    view = None
+    if missing_group_ids:
+        view = discord.ui.View()
+        for index, group_id in enumerate(missing_group_ids, start=1):
+            view.add_item(
+                discord.ui.Button(
+                    label=f"Join Group {index}",
+                    url=build_roblox_group_share_url(group_id),
+                )
+            )
+        log_debug("check.slash_join_buttons_added", username=user_data["name"], missing_groups=",".join(missing_group_ids))
+
+    await interaction.followup.send(embed=embed, view=view)
+
+@bot.tree.context_menu(name="Giveaway Check")
+async def giveaway_context_menu(interaction: discord.Interaction, message: discord.Message):
+    log_debug("giveaway.context_invoked", author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None), target_message_id=getattr(message, "id", None))
+    ticket_data = extract_ticket_identity(message)
+    discord_user_id = ticket_data["discord_user_id"]
+    discord_username = ticket_data["discord_username"]
+    roblox_username = ticket_data["roblox_username"]
+    log_debug(
+        "giveaway.context_ticket_parsed",
+        discord_user_id=discord_user_id,
+        discord_username=discord_username,
+        roblox_username=roblox_username,
+    )
+
+    if not discord_user_id or not roblox_username:
+        await interaction.response.send_message(
+            "❌ Data dari message target belum lengkap. Pastikan ada `User ID` dan `Username Roblox`.",
+            ephemeral=True,
+        )
+        return
+
+    group_ids = get_configured_roblox_group_ids()
+    if not group_ids or not ROBLOX_API_KEY:
+        await interaction.response.send_message("❌ `ROBLOX_GROUP_IDS` atau `ROBLOX_API_KEY` belum diset di environment bot.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    discord_member_status, member = await find_member_in_guild(MEDUSABLOX_GUILD_ID, discord_user_id)
+    log_debug(
+        "giveaway.context_discord_member_checked",
+        discord_user_id=discord_user_id,
+        status=discord_member_status,
+        members_intent=ENABLE_MEMBERS_INTENT,
+    )
+    try:
+        roblox_user = await lookup_roblox_user(bot.http_session, roblox_username)
+    except Exception as e:
+        log_debug("giveaway.context_roblox_lookup_exception", roblox_username=roblox_username, error=str(e))
+        await interaction.followup.send(f"❌ Gagal cek username Roblox: {e}")
+        return
+
+    group_results = []
+    if roblox_user:
+        for group_id in group_ids:
+            membership = await get_group_membership(bot.http_session, group_id, roblox_user["id"])
+            group_results.append({
+                "group_id": group_id,
+                "joined": bool(membership),
+            })
+
+    discord_ok = discord_member_status == "found"
+    discord_unknown = discord_member_status == "unknown"
+    roblox_ok = roblox_user is not None
+    joined_group_ids = [item["group_id"] for item in group_results if item["joined"]]
+    missing_group_ids = [item["group_id"] for item in group_results if not item["joined"]]
+    all_groups_joined = roblox_ok and len(group_results) > 0 and not missing_group_ids
+
+    embed = discord.Embed(title="🎁 Hasil Cek Giveaway", color=0x1A1F5E)
+    embed.add_field(name="Discord User ID", value=str(discord_user_id), inline=True)
+    embed.add_field(name="Discord Username", value=discord_username or "-", inline=True)
+    embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
+
+    if discord_ok:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=f"✅ Sudah join guild target.\nMember: {member.mention}",
+            inline=False,
+        )
+    elif discord_unknown:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=(
+                "⚠️ Belum bisa diverifikasi otomatis saat ini.\n"
+                "Bot tetap berjalan tanpa `Server Members Intent`, jadi status join Discord perlu dicek manual sementara review intent masih berlangsung."
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=f"❌ Belum ditemukan sebagai member guild `{MEDUSABLOX_GUILD_ID}`.",
+            inline=False,
+        )
+
+    if not roblox_ok:
+        embed.add_field(
+            name="Status Roblox",
+            value="❌ Username Roblox tidak ditemukan atau terkena filter banned user.",
+            inline=False,
+        )
+    else:
+        joined_text = ", ".join(f"`{group_id}`" for group_id in joined_group_ids) if joined_group_ids else "-"
+        roblox_status_lines = [f"✅ Sudah join: {joined_text}"]
+        if missing_group_ids:
+            missing_text = ", ".join(f"`{group_id}`" for group_id in missing_group_ids)
+            roblox_status_lines.append(f"❌ Belum join: {missing_text}")
+        embed.add_field(name="Join Group Roblox", value="\n".join(roblox_status_lines), inline=False)
+
+    is_eligible = discord_ok and all_groups_joined
+    if is_eligible:
+        embed.color = 0x2ECC71
+        embed.add_field(
+            name="Status Giveaway",
+            value="✅ Lolos pengecekan giveaway. User sudah join Discord Medusablox dan sudah join semua group Roblox yang diwajibkan.",
+            inline=False,
+        )
+    else:
+        embed.color = 0xE67E22
+        reasons = []
+        if discord_unknown:
+            reasons.append("status member Discord belum bisa diverifikasi otomatis")
+        elif not discord_ok:
+            reasons.append("belum join Discord Medusablox")
+        if not roblox_ok:
+            reasons.append("username Roblox tidak valid")
+        elif missing_group_ids:
+            reasons.append("belum join semua group Roblox yang diwajibkan")
+        reason_text = ", ".join(reasons) if reasons else "syarat belum terpenuhi"
+        embed.add_field(
+            name="Status Giveaway",
+            value=f"⏳ Belum lolos pengecekan giveaway karena {reason_text}.",
+            inline=False,
+        )
+
+    view = None
+    if (not discord_ok and not discord_unknown) or missing_group_ids:
+        view = discord.ui.View()
+        if not discord_ok and not discord_unknown:
+            view.add_item(
+                discord.ui.Button(
+                    label="Join Discord",
+                    url=MEDUSABLOX_DISCORD_INVITE_URL,
+                )
+            )
+        for index, group_id in enumerate(missing_group_ids, start=1):
+            view.add_item(
+                discord.ui.Button(
+                    label=f"Join Group {index}",
+                    url=build_roblox_group_share_url(group_id),
+                )
+            )
+
+    await interaction.followup.send(embed=embed, view=view)
+
+@bot.tree.command(name="order", description="Buat external order Roblox secara manual")
+@app_commands.describe(
+    username="Username Roblox yang mau dibuatkan order",
+    amount="Jumlah Robux, contoh: 125 atau 1k",
+)
+async def order_slash(interaction: discord.Interaction, username: str, amount: str):
+    log_debug("order.slash_invoked", author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None), username=username, amount_raw=amount)
+    if not await ensure_order_interaction_access(interaction):
+        log_debug("order.slash_access_denied", author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None))
+        return
+
+    username = sanitize_roblox_username(username) or username.strip()
+    if not username:
+        log_debug("order.slash_invalid_usage", reason="missing_username")
+        await interaction.response.send_message("❌ Username Roblox wajib diisi.", ephemeral=True)
+        return
+
+    parsed_amount = parse_robux_amount_input(amount)
+    if not parsed_amount or parsed_amount <= 0:
+        log_debug("order.slash_invalid_amount", amount_raw=amount, parsed_amount=parsed_amount)
+        await interaction.response.send_message("❌ Nominal Robux tidak valid. Contoh: `125` atau `1k`.", ephemeral=True)
+        return
+
+    if parsed_amount < CALC_MIN_ROBUX:
+        log_debug("order.slash_below_minimum", amount=parsed_amount, minimum=CALC_MIN_ROBUX)
+        await interaction.response.send_message(f"❌ Minimum order adalah **{CALC_MIN_ROBUX} Robux**.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    try:
+        order_response = await place_external_order(bot.http_session, username, parsed_amount)
+    except Exception as e:
+        log_debug("order.slash_exception", username=username, amount=parsed_amount, error=str(e))
+        await interaction.followup.send(f"❌ Gagal membuat order: {e}")
+        return
+
+    if not order_response or not order_response.get("success"):
+        error_message = "Gagal membuat external order."
+        if order_response and order_response.get("message"):
+            error_message = order_response["message"]
+        log_debug("order.slash_failed", username=username, amount=parsed_amount, message=error_message)
+        await interaction.followup.send(f"❌ {error_message}")
+        return
+
+    order_data = order_response.get("data") or {}
+    log_debug("order.slash_succeeded", username=order_data.get("username", username), order_number=order_data.get("order_number"), amount=order_data.get("amount", parsed_amount), total_price=order_data.get("total_price"))
+    embed = discord.Embed(
+        title="✅ Order berhasil dibuat",
+        description=order_response.get("message", "External order placed successfully."),
+        color=0x2ECC71,
+    )
+    embed.add_field(name="Order Number", value=order_data.get("order_number", "-"), inline=True)
+    embed.add_field(name="Username", value=order_data.get("username", username), inline=True)
+    embed.add_field(name="Amount", value=f"{order_data.get('amount', parsed_amount)} Robux", inline=True)
+    embed.add_field(name="Method", value=order_data.get("method", "-"), inline=True)
+    embed.add_field(name="Total Price", value=format_rupiah(int(order_data.get("total_price", 0))), inline=True)
+    embed.add_field(name="Status", value=order_data.get("status", "-"), inline=True)
+
+    order_url = (order_data.get("order_url") or "").strip().strip("`").strip()
+    if order_url:
+        embed.add_field(name="Order URL", value=f"[Klik untuk buka order]({order_url})", inline=False)
+
+    avatar_url = (order_data.get("avatar") or "").strip().strip("`").strip()
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+
+    guild_config = get_guild_config(interaction.guild.id) if interaction.guild else None
+    total_price = int(order_data.get("total_price", 0) or 0)
+    has_order_qris = bool(guild_config and guild_config.get("static_qris") and guild_config.get("merchant_name"))
+    if has_order_qris and total_price > 0:
+        try:
+            qris_total = apply_admin_fee(total_price)
+            qris_payload = make_dynamic_qris(guild_config["static_qris"], qris_total)
+            qris_image = generate_qris_image(
+                qris_payload,
+                qris_total,
+                guild_config["merchant_name"],
+                original_amount=total_price,
+            )
+            qris_file = discord.File(qris_image, filename="order_qris.png")
+            embed.set_image(url="attachment://order_qris.png")
+            embed.add_field(name="QRIS Total", value=format_rupiah(qris_total), inline=True)
+            log_debug("order.slash_qris_generated", order_number=order_data.get("order_number"), subtotal=total_price, qris_total=qris_total)
+            await interaction.followup.send(embed=embed, file=qris_file)
+            return
+        except Exception as e:
+            log_debug("order.slash_qris_failed", order_number=order_data.get("order_number"), error=str(e))
+            embed.add_field(name="QRIS", value=f"Gagal generate QRIS: `{e}`", inline=False)
+
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="payment", description="Upload bukti bayar order via attachment gambar")
+@app_commands.describe(
+    order_number="Nomor order yang ingin ditandai paid",
+    image="Attachment screenshot bukti pembayaran",
+)
+async def payment_slash(interaction: discord.Interaction, order_number: str, image: discord.Attachment):
+    log_debug("payment.slash_invoked", author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None), order_number=order_number, filename=getattr(image, "filename", None))
+    if not await ensure_order_interaction_access(interaction):
+        log_debug("payment.slash_access_denied", author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None))
+        return
+
+    order_number = (order_number or "").strip()
+    if not order_number:
+        log_debug("payment.slash_invalid_usage", reason="missing_order_number")
+        await interaction.response.send_message("❌ Order number wajib diisi.", ephemeral=True)
+        return
+
+    content_type = image.content_type or ""
+    lower_name = (image.filename or "").lower()
+    if not content_type.startswith("image/") and not lower_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+        log_debug("payment.slash_invalid_attachment", filename=image.filename, content_type=content_type)
+        await interaction.response.send_message("❌ Attachment harus berupa gambar bukti pembayaran.", ephemeral=True)
+        return
+
+    image_url = image.url
+    await interaction.response.defer(thinking=True)
+    try:
+        upload_response = await upload_payment_proof(bot.http_session, order_number, image_url)
+    except Exception as e:
+        log_debug("payment.slash_exception", order_number=order_number, image_url=image_url, error=str(e))
+        await interaction.followup.send(f"❌ Gagal upload payment proof: {e}")
+        return
+
+    if not upload_response or not upload_response.get("success"):
+        error_message = "Gagal upload payment proof."
+        if upload_response and upload_response.get("message"):
+            error_message = upload_response["message"]
+        log_debug("payment.slash_failed", order_number=order_number, image_url=image_url, message=error_message)
+        await interaction.followup.send(f"❌ {error_message}")
+        return
+
+    upload_data = upload_response.get("data") or {}
+    log_debug("payment.slash_succeeded", order_number=upload_data.get("order_number", order_number), status=upload_data.get("status", "done"), image_url=image_url)
+    embed = discord.Embed(
+        title="✅ Payment berhasil diupload",
+        description=upload_response.get("message", "Payment uploaded successfully."),
+        color=0x2ECC71,
+    )
+    embed.add_field(name="Order Number", value=upload_data.get("order_number", order_number), inline=True)
+    embed.add_field(name="Status", value=upload_data.get("status", "done"), inline=True)
+    embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
+    await interaction.followup.send(embed=embed)
 
 
 # ── /setrole ───────────────────────────────────────────────────────────────────
