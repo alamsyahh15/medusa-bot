@@ -25,6 +25,8 @@ ROBLOX_EXTERNAL_ORDER_API = os.getenv("ROBLOX_EXTERNAL_ORDER_API", "http://local
 ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API = os.getenv("ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API", "http://localhost:8000/api/roblox/external/order/upload-payment")
 MEDUSABLOX_GUILD_ID = 1479845174430404738
 MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.gg/Qm24MCdScV"
+SLASH_SYNC_COOLDOWN_SECONDS = int(os.getenv("SLASH_SYNC_COOLDOWN_SECONDS", "900"))
+FORCE_SLASH_SYNC = os.getenv("FORCE_SLASH_SYNC", "0") == "1"
 CALC_RATES = {
     "group": 138000,
     "gamepass": 128000,
@@ -52,6 +54,33 @@ def load_config() -> dict:
 def save_config(config: dict):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+def get_bot_meta() -> dict:
+    return load_config().get("__meta__", {})
+
+def set_bot_meta_value(key: str, value):
+    config = load_config()
+    meta = config.get("__meta__", {})
+    meta[key] = value
+    config["__meta__"] = meta
+    save_config(config)
+
+def should_sync_slash_commands() -> tuple[bool, int]:
+    if FORCE_SLASH_SYNC:
+        return True, 0
+
+    last_synced_at = get_bot_meta().get("last_slash_sync_at", 0)
+    try:
+        last_synced_at = int(last_synced_at)
+    except (TypeError, ValueError):
+        last_synced_at = 0
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    elapsed = now_ts - last_synced_at
+    if elapsed >= SLASH_SYNC_COOLDOWN_SECONDS:
+        return True, 0
+
+    return False, SLASH_SYNC_COOLDOWN_SECONDS - elapsed
 
 def get_guild_config(guild_id: int) -> Optional[dict]:
     return load_config().get(str(guild_id))
@@ -726,8 +755,14 @@ class QRISBot(commands.Bot):
 
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
+        should_sync, remaining_seconds = should_sync_slash_commands()
+        if not should_sync:
+            print(f"⏭️ Slash command sync dilewati untuk hindari rate limit. Coba lagi dalam {remaining_seconds} detik.")
+            return
+
         try:
             synced = await self.tree.sync()
+            set_bot_meta_value("last_slash_sync_at", int(datetime.now(timezone.utc).timestamp()))
             print(f"✅ Slash commands synced: {len(synced)} commands")
         except Exception as e:
             print(f"❌ Sync error: {e}")
