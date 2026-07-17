@@ -389,7 +389,7 @@ def build_calc_result_embed(calc_mode: str, amount: int) -> discord.Embed:
             rate_per_robux = math.ceil(rate / 1000)
             result_lines.append(
                 f"{CALC_TYPE_ICONS[calc_type]} **{CALC_TYPE_LABELS[calc_type]}**\n"
-                f"**{format_rupiah(total_idr)}** (`Rp{rate_per_robux}/Robux`)"
+                f"> **{format_rupiah(total_idr)}** (`Rp{rate_per_robux}/Robux`)"
             )
         embed.add_field(name="Hasil", value="\n\n".join(result_lines), inline=False)
         embed.set_footer(text="Perhitungan IDR dibulatkan ke atas.")
@@ -406,7 +406,7 @@ def build_calc_result_embed(calc_mode: str, amount: int) -> discord.Embed:
             suffix = f" • minimum {CALC_MIN_ROBUX}"
         result_lines.append(
             f"{CALC_TYPE_ICONS[calc_type]} **{CALC_TYPE_LABELS[calc_type]}**\n"
-            f"**{total_robux:,} Robux**{suffix}".replace(",", ".")
+            f"> **{total_robux:,} Robux**{suffix}".replace(",", ".")
         )
     embed.add_field(name="Hasil", value="\n\n".join(result_lines), inline=False)
     embed.set_footer(text="Estimasi Robux dibulatkan ke bawah.")
