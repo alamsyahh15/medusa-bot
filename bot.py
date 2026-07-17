@@ -1530,6 +1530,7 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux. Bisa dibatasi via `/setrole`.", inline=False)
     embed.add_field(name="!payment <order_number>", value="Reply ke message customer yang berisi bukti bayar untuk upload payment. Bisa dibatasi via `/setrole`.", inline=False)
     embed.add_field(name="/check", value="Versi slash dari cek Roblox. Contoh: `/check username_roblox`", inline=False)
+    embed.add_field(name="/giveaway", value="Versi slash untuk cek giveaway. Contoh: `/giveaway discord_user_id roblox_username`", inline=False)
     embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway tanpa reply command.", inline=False)
     embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
     embed.add_field(name="/payment", value="Upload bukti bayar via slash dengan attachment. Contoh: `/payment order_number image`", inline=False)
@@ -1673,6 +1674,161 @@ async def check_slash(interaction: discord.Interaction, username_roblox: str):
                 )
             )
         log_debug("check.slash_join_buttons_added", username=user_data["name"], missing_groups=",".join(missing_group_ids))
+
+    await send_interaction_message(interaction, embed=embed, view=view)
+
+@bot.tree.command(name="giveaway", description="Cek kelolosan giveaway via input manual")
+@app_commands.describe(
+    discord_user_id="User ID Discord peserta",
+    roblox_username="Username Roblox peserta",
+    discord_username="Username Discord peserta (opsional, untuk tampilan embed)"
+)
+async def giveaway_slash(
+    interaction: discord.Interaction,
+    discord_user_id: str,
+    roblox_username: str,
+    discord_username: Optional[str] = None,
+):
+    cleaned_user_id = "".join(char for char in (discord_user_id or "") if char.isdigit())
+    roblox_username = sanitize_roblox_username(roblox_username) or roblox_username.strip()
+    discord_username = discord_username.strip() if discord_username else None
+    log_debug(
+        "giveaway.slash_invoked",
+        author=getattr(interaction.user, "id", None),
+        guild=getattr(interaction.guild, "id", None),
+        discord_user_id=cleaned_user_id,
+        discord_username=discord_username,
+        roblox_username=roblox_username,
+    )
+
+    if not cleaned_user_id or not roblox_username:
+        await interaction.response.send_message(
+            "❌ `discord_user_id` dan `roblox_username` wajib diisi.",
+            ephemeral=True,
+        )
+        return
+
+    group_ids = get_configured_roblox_group_ids()
+    if not group_ids or not ROBLOX_API_KEY:
+        await interaction.response.send_message("❌ `ROBLOX_GROUP_IDS` atau `ROBLOX_API_KEY` belum diset di environment bot.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    numeric_user_id = int(cleaned_user_id)
+    discord_member_status, member = await find_member_in_guild(MEDUSABLOX_GUILD_ID, numeric_user_id)
+    log_debug(
+        "giveaway.slash_discord_member_checked",
+        discord_user_id=numeric_user_id,
+        status=discord_member_status,
+        members_intent=ENABLE_MEMBERS_INTENT,
+    )
+    try:
+        roblox_user = await lookup_roblox_user(bot.http_session, roblox_username)
+    except Exception as e:
+        log_debug("giveaway.slash_roblox_lookup_exception", roblox_username=roblox_username, error=str(e))
+        await interaction.followup.send(f"❌ Gagal cek username Roblox: {e}")
+        return
+
+    group_results = []
+    if roblox_user:
+        for group_id in group_ids:
+            membership = await get_group_membership(bot.http_session, group_id, roblox_user["id"])
+            group_results.append({
+                "group_id": group_id,
+                "joined": bool(membership),
+            })
+
+    discord_ok = discord_member_status == "found"
+    discord_unknown = discord_member_status == "unknown"
+    roblox_ok = roblox_user is not None
+    joined_group_ids = [item["group_id"] for item in group_results if item["joined"]]
+    missing_group_ids = [item["group_id"] for item in group_results if not item["joined"]]
+    all_groups_joined = roblox_ok and len(group_results) > 0 and not missing_group_ids
+
+    embed = discord.Embed(title="🎁 Hasil Cek Giveaway", color=0x1A1F5E)
+    embed.add_field(name="Discord User ID", value=str(numeric_user_id), inline=True)
+    embed.add_field(name="Discord Username", value=discord_username or "-", inline=True)
+    embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
+
+    if discord_ok:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=f"✅ Sudah join guild target.\nMember: {member.mention}",
+            inline=False,
+        )
+    elif discord_unknown:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=(
+                "⚠️ Belum bisa diverifikasi otomatis saat ini.\n"
+                "Bot tetap berjalan tanpa `Server Members Intent`, jadi status join Discord perlu dicek manual sementara review intent masih berlangsung."
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Member Discord Medusablox",
+            value=f"❌ Belum ditemukan sebagai member guild `{MEDUSABLOX_GUILD_ID}`.",
+            inline=False,
+        )
+
+    if not roblox_ok:
+        embed.add_field(
+            name="Status Roblox",
+            value="❌ Username Roblox tidak ditemukan atau terkena filter banned user.",
+            inline=False,
+        )
+    else:
+        joined_text = ", ".join(f"`{group_id}`" for group_id in joined_group_ids) if joined_group_ids else "-"
+        roblox_status_lines = [f"✅ Sudah join: {joined_text}"]
+        if missing_group_ids:
+            missing_text = ", ".join(f"`{group_id}`" for group_id in missing_group_ids)
+            roblox_status_lines.append(f"❌ Belum join: {missing_text}")
+        embed.add_field(name="Join Group Roblox", value="\n".join(roblox_status_lines), inline=False)
+
+    is_eligible = discord_ok and all_groups_joined
+    if is_eligible:
+        embed.color = 0x2ECC71
+        embed.add_field(
+            name="Status Giveaway",
+            value="✅ Lolos pengecekan giveaway. User sudah join Discord Medusablox dan sudah join semua group Roblox yang diwajibkan.",
+            inline=False,
+        )
+    else:
+        embed.color = 0xE67E22
+        reasons = []
+        if discord_unknown:
+            reasons.append("status member Discord belum bisa diverifikasi otomatis")
+        elif not discord_ok:
+            reasons.append("belum join Discord Medusablox")
+        if not roblox_ok:
+            reasons.append("username Roblox tidak valid")
+        elif missing_group_ids:
+            reasons.append("belum join semua group Roblox yang diwajibkan")
+        reason_text = ", ".join(reasons) if reasons else "syarat belum terpenuhi"
+        embed.add_field(
+            name="Status Giveaway",
+            value=f"⏳ Belum lolos pengecekan giveaway karena {reason_text}.",
+            inline=False,
+        )
+
+    view = None
+    if (not discord_ok and not discord_unknown) or missing_group_ids:
+        view = discord.ui.View()
+        if not discord_ok and not discord_unknown:
+            view.add_item(
+                discord.ui.Button(
+                    label="Join Discord",
+                    url=MEDUSABLOX_DISCORD_INVITE_URL,
+                )
+            )
+        for index, group_id in enumerate(missing_group_ids, start=1):
+            view.add_item(
+                discord.ui.Button(
+                    label=f"Join Group {index}",
+                    url=build_roblox_group_share_url(group_id),
+                )
+            )
 
     await send_interaction_message(interaction, embed=embed, view=view)
 
