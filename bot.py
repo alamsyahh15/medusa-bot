@@ -25,7 +25,7 @@ ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
 ROBLOX_EXTERNAL_ORDER_API = os.getenv("ROBLOX_EXTERNAL_ORDER_API", "http://localhost:8000/api/roblox/external/order")
 ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API = os.getenv("ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API", "http://localhost:8000/api/roblox/external/order/upload-payment")
 MEDUSABLOX_GUILD_ID = 1479845174430404738
-MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.gg/Qm24MCdScV"
+MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.gg/BJ6hQE8zAb"
 SLASH_SYNC_COOLDOWN_SECONDS = int(os.getenv("SLASH_SYNC_COOLDOWN_SECONDS", "900"))
 FORCE_SLASH_SYNC = os.getenv("FORCE_SLASH_SYNC", "0") == "1"
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
