@@ -257,10 +257,20 @@ async def send_interaction_message(
     file: discord.File = None,
     ephemeral: bool = False,
 ):
+    payload = {"ephemeral": ephemeral}
+    if content is not None:
+        payload["content"] = content
+    if embed is not None:
+        payload["embed"] = embed
+    if view is not None:
+        payload["view"] = view
+    if file is not None:
+        payload["file"] = file
+
     if interaction.response.is_done():
-        await interaction.followup.send(content=content, embed=embed, view=view, file=file, ephemeral=ephemeral)
+        await interaction.followup.send(**payload)
         return
-    await interaction.response.send_message(content=content, embed=embed, view=view, file=file, ephemeral=ephemeral)
+    await interaction.response.send_message(**payload)
 
 async def ensure_order_interaction_access(interaction: discord.Interaction) -> bool:
     member = interaction.user
@@ -1664,7 +1674,7 @@ async def check_slash(interaction: discord.Interaction, username_roblox: str):
             )
         log_debug("check.slash_join_buttons_added", username=user_data["name"], missing_groups=",".join(missing_group_ids))
 
-    await interaction.followup.send(embed=embed, view=view)
+    await send_interaction_message(interaction, embed=embed, view=view)
 
 @bot.tree.context_menu(name="Giveaway Check")
 async def giveaway_context_menu(interaction: discord.Interaction, message: discord.Message):
@@ -1808,7 +1818,7 @@ async def giveaway_context_menu(interaction: discord.Interaction, message: disco
                 )
             )
 
-    await interaction.followup.send(embed=embed, view=view)
+    await send_interaction_message(interaction, embed=embed, view=view)
 
 @bot.tree.command(name="order", description="Buat external order Roblox secara manual")
 @app_commands.describe(
