@@ -479,6 +479,9 @@ def sanitize_roblox_username(value: Optional[str]) -> Optional[str]:
     cleaned = value.strip().strip("`").strip()
     cleaned = cleaned.replace("\u200b", "").replace("\u200e", "").replace("\u200f", "")
     cleaned = cleaned.replace("*", "").replace("_ _", "")
+    cleaned = cleaned.replace("\\_", "_").replace("\\*", "*").replace("\\`", "`")
+    cleaned = cleaned.replace("\\~", "~").replace("\\|", "|")
+    cleaned = cleaned.replace("\\", "")
 
     import re
     match = re.search(r"[A-Za-z0-9_]{3,20}", cleaned)
