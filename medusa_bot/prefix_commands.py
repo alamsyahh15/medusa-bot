@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands
 
-from .config import CALC_MIN_ROBUX, ROBLOX_API_KEY
+from .config import CALC_MIN_ROBUX, ROBLOX_API_KEY, get_guild_config
 from .helpers import (
     apply_admin_fee,
     build_calc_result_embed,
@@ -17,7 +17,6 @@ from .helpers import (
     get_configured_roblox_group_ids,
     get_embed_field_value,
     get_group_membership,
-    get_guild_config,
     get_message_image_url,
     log_debug,
     lookup_roblox_user,
