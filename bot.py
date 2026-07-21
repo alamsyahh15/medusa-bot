@@ -1552,6 +1552,7 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="/qrisreset 🔒", value="Hapus konfigurasi QRIS. (Admin only)", inline=False)
     embed.add_field(name="/leaderboardset 🔒", value="Set atau remove channel leaderboard. (Admin only)", inline=False)
     embed.add_field(name="/leaderboard-update 🔒", value="Update leaderboard sekarang. (Admin only)", inline=False)
+    embed.add_field(name="Privacy Policy", value="[Klik di sini](https://alamsyahh15.github.io/medusa-bot/privacy.html)", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
