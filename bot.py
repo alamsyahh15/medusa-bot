@@ -954,7 +954,7 @@ class RatingModal(discord.ui.Modal, title="Kirim Rating"):
         embed.add_field(name="Server", value=interaction.guild.name, inline=True)
         embed.add_field(name="Dikirim", value=f"<t:{int(now_utc.timestamp())}:R>", inline=True)
         embed.timestamp = now_utc
-        embed.set_footer(text=f"Terima kasih sudah berbelanja! • User ID: {interaction.user.id}")
+        embed.set_footer(text=f"Terima kasih sudah berbelanja! • Verified Customer")
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
 
         await log_channel.send(embed=embed)
