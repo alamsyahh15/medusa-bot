@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms of Service — Medusa Helper</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --border: #2a2e38;
+    --text: #e6e8ec;
+    --muted: #9aa1ad;
+    --accent: #7c6cf0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+  }
+  header {
+    margin-bottom: 40px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 28px;
+  }
+  h1 {
+    font-size: 28px;
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+  .updated {
+    color: var(--muted);
+    font-size: 14px;
+  }
+  h2 {
+    font-size: 18px;
+    margin: 40px 0 12px;
+    color: var(--text);
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+  }
+  h3 {
+    font-size: 15px;
+    margin: 20px 0 8px;
+    color: var(--muted);
+  }
+  p, li {
+    font-size: 15px;
+    color: var(--text);
+  }
+  ul {
+    padding-left: 20px;
+  }
+  li {
+    margin-bottom: 8px;
+  }
+  strong {
+    color: #fff;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+  code {
+    background: #20232c;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 8px;
+  }
+  .contact-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-top: 16px;
+  }
+  .contact-box .label {
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .contact-box .value {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .warn {
+    background: #241a12;
+    border: 1px solid #4a3420;
+    border-radius: 10px;
+    padding: 16px 20px;
+    color: #f0c98a;
+    font-size: 14px;
+    margin: 16px 0;
+  }
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Terms of Service — Medusa Helper</h1>
+    <div class="updated">Last updated: July 21, 2026</div>
+  </header>
+
+  <div class="card">
+    <p>These Terms of Service ("Terms") govern your access to and use of Medusa Helper (the "Bot"), a Discord bot providing Roblox Robux order, payment, and community-management utilities for MedusaBlox and its partner servers. By adding, invoking, or otherwise using the Bot, you agree to be bound by these Terms. If you do not agree, do not use the Bot.</p>
+  </div>
+
+  <h2>1. Description of Service</h2>
+  <p>The Bot provides the following features via Discord slash commands and prefix commands:</p>
+  <ul>
+    <li><strong>QRIS payment generation</strong> (<code>!qris</code>) — generates dynamic QRIS payment QR codes for Indonesian e-wallet/bank transfers, configured per server via <code>/qrissetup</code>.</li>
+    <li><strong>Robux/IDR conversion calculator</strong> (<code>!calc</code>).</li>
+    <li><strong>Roblox group membership eligibility check</strong> (<code>!check</code>) — verifies whether a Roblox account has been a member of a designated Roblox group for the required duration.</li>
+    <li><strong>Giveaway eligibility verification</strong> (<code>!giveaway</code>) — checks Discord server membership and Roblox group membership against giveaway requirements.</li>
+    <li><strong>Order placement</strong> (<code>!order</code>) — submits Robux orders to our backend order-processing system on your behalf.</li>
+    <li><strong>Payment proof submission</strong> (<code>!payment</code>) — uploads payment confirmation images to our backend for order verification.</li>
+    <li><strong>Leaderboard display</strong> (<code>!leaderboard</code>) — displays top buyers based on cumulative Robux purchases.</li>
+  </ul>
+  <p>The Bot is a tool that facilitates these functions; it does not itself hold custody of funds beyond generating payment instructions and relaying data to our backend and to Roblox's public APIs.</p>
+
+  <h2>2. Eligibility</h2>
+  <ul>
+    <li>You must comply with Discord's <a href="https://discord.com/terms" target="_blank" rel="noopener">Terms of Service</a> and <a href="https://discord.com/guidelines" target="_blank" rel="noopener">Community Guidelines</a>, and Roblox's <a href="https://en.help.roblox.com/hc/en-us/articles/115004647846" target="_blank" rel="noopener">Terms of Use</a>, in addition to these Terms.</li>
+    <li>You must be old enough to use Discord and Roblox under their respective terms and applicable law in your jurisdiction.</li>
+    <li>Server administrators configuring the Bot (e.g. via <code>/qrissetup</code>, <code>/setrole</code>, <code>/leaderboardset</code>) are responsible for ensuring their configuration complies with these Terms and applicable law.</li>
+  </ul>
+
+  <h2>3. Orders and Payments</h2>
+  <ul>
+    <li>Orders placed via <code>!order</code> are submitted to our backend order-processing system and are subject to eligibility checks (e.g. Roblox group membership duration) performed via <code>!check</code>.</li>
+    <li>Payment amounts generated via <code>!qris</code> may include an administrative fee, disclosed at the time of generation, added on top of the requested subtotal.</li>
+    <li>Payment confirmations submitted via <code>!payment</code> are reviewed and processed by our team; submitting a payment proof does not guarantee automatic or immediate order fulfillment.</li>
+    <li>E-wallet and bank transfer payments made through generated QRIS codes are, in general, <strong>non-refundable</strong> once completed, except where required by applicable law or at our discretion in cases of verified error (e.g. duplicate payment, incorrect amount due to a Bot malfunction).</li>
+  </ul>
+  <div class="warn">
+    We are not a payment processor, bank, or e-wallet provider. Payments are processed through third-party QRIS-compatible payment channels. We are not responsible for delays, failures, or disputes caused by those third-party payment systems.
+  </div>
+
+  <h2>4. Roblox and Third-Party Services</h2>
+  <ul>
+    <li>The Bot relies on Roblox's public APIs to verify usernames and group membership. We do not control, and are not responsible for, the accuracy, availability, or behavior of Roblox's services.</li>
+    <li>Group membership requirements (e.g. minimum join duration) are set by us for fraud-prevention purposes and may change at any time without notice.</li>
+    <li>We are not affiliated with, endorsed by, or sponsored by Roblox Corporation or Discord Inc.</li>
+  </ul>
+
+  <h2>5. Acceptable Use</h2>
+  <p>You agree not to:</p>
+  <ul>
+    <li>Use the Bot to submit false, fraudulent, or manipulated data (e.g. fake payment proofs, spoofed Roblox/Discord identity information) to gain orders, giveaways, or rewards you are not entitled to.</li>
+    <li>Attempt to exploit, abuse, reverse-engineer, or interfere with the Bot's operation, rate limits, or underlying infrastructure.</li>
+    <li>Use the Bot for any unlawful purpose, including money laundering, fraud, or circumventing Roblox's or Discord's Terms of Service.</li>
+    <li>Use the Bot's commands (e.g. <code>!order</code>, <code>!payment</code>) without the role permissions configured by your server's administrators.</li>
+  </ul>
+
+  <h2>6. Server Administrator Responsibilities</h2>
+  <ul>
+    <li>Server administrators are solely responsible for the accuracy of QRIS payment configuration (<code>/qrissetup</code>) they submit, including merchant name and payload.</li>
+    <li>Administrators are responsible for managing role-based access to <code>!order</code> and <code>!payment</code> via <code>/setrole</code>, and for any misuse by roles/members they grant access to.</li>
+  </ul>
+
+  <h2>7. Disclaimers</h2>
+  <ul>
+    <li>The Bot is provided <strong>"as is" and "as available"</strong>, without warranties of any kind, express or implied, including fitness for a particular purpose, accuracy, or uninterrupted availability.</li>
+    <li>We do not guarantee that eligibility checks, order processing, or leaderboard data will always be accurate, complete, or free of errors caused by third-party APIs (Discord, Roblox) or backend downtime.</li>
+  </ul>
+
+  <h2>8. Limitation of Liability</h2>
+  <p>To the maximum extent permitted by applicable law, we shall not be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of funds, Robux, data, or goodwill, arising out of or related to your use of the Bot, including but not limited to payment processing errors, third-party API failures, or unauthorized access resulting from misconfigured server permissions.</p>
+
+  <h2>9. Termination</h2>
+  <ul>
+    <li>We may suspend or terminate access to the Bot, for any server or user, at any time, with or without notice, for violation of these Terms or for any other reason at our discretion.</li>
+    <li>Server administrators may remove the Bot from their server at any time to stop all data processing described in our <a href="./privacy.html">Privacy Policy</a>.</li>
+  </ul>
+
+  <h2>10. Changes to These Terms</h2>
+  <p>We may update these Terms from time to time. Changes will be posted here with an updated "Last updated" date. Continued use of the Bot after changes constitutes acceptance of the updated Terms.</p>
+
+  <h2>11. Contact Us</h2>
+  <p>If you have questions about these Terms, please contact us:</p>
+  <div class="contact-box">
+    <div class="label">Email</div>
+    <div class="value"><a href="mailto:muhamad.a.syah31@gmail.com">muhamad.a.syah31@gmail.com</a></div>
+  </div>
+  <div class="contact-box">
+    <div class="label">Discord Support Server</div>
+    <div class="value"><a href="https://discord.gg/Qm24MCdScV" target="_blank" rel="noopener">discord.gg/Qm24MCdScV</a></div>
+  </div>
+
+  <footer>
+    Medusa Helper — Discord Bot for MedusaBlox
+  </footer>
+
+</div>
+</body>
+</html>
