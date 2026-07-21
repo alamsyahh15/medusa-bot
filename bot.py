@@ -144,6 +144,30 @@ def get_leaderboard_config(guild_id: int) -> Optional[dict]:
         return None
     return {"channel_id": channel_id, "message_id": cfg.get("lb_message_id")}
 
+def set_rating_log_config(guild_id: int, channel_id: int):
+    config = load_config()
+    guild_key = str(guild_id)
+    if guild_key not in config:
+        config[guild_key] = {}
+    config[guild_key]["rating_log_channel_id"] = channel_id
+    save_config(config)
+
+def delete_rating_log_config(guild_id: int):
+    config = load_config()
+    guild_key = str(guild_id)
+    if guild_key in config:
+        config[guild_key].pop("rating_log_channel_id", None)
+        if not config[guild_key]:
+            del config[guild_key]
+        save_config(config)
+
+def get_rating_log_config(guild_id: int) -> Optional[dict]:
+    cfg = load_config().get(str(guild_id), {})
+    channel_id = cfg.get("rating_log_channel_id")
+    if not channel_id:
+        return None
+    return {"channel_id": channel_id}
+
 def set_order_role_config(guild_id: int, role_ids):
     config = load_config()
     guild_key = str(guild_id)
@@ -846,11 +870,117 @@ async def post_or_edit_leaderboard(bot, guild_id: int):
     set_leaderboard_config(guild_id, lb_cfg["channel_id"], msg.id)
     print(f"[Leaderboard] Sent new — guild {guild_id}")
 
-def resolve_leaderboard_channel(channel: app_commands.AppCommandChannel):
+def resolve_text_channel(channel: app_commands.AppCommandChannel):
     resolved = channel.resolve()
     if isinstance(resolved, discord.TextChannel):
         return resolved
     return None
+
+
+class RatingModal(discord.ui.Modal, title="Kirim Rating"):
+    rating = discord.ui.TextInput(
+        label="Rating (1-5)",
+        placeholder="Masukkan angka 1 sampai 5",
+        required=True,
+        min_length=1,
+        max_length=1,
+    )
+    comment = discord.ui.TextInput(
+        label="Comment (opsional)",
+        placeholder="Tulis review singkat kamu di sini",
+        required=False,
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_rating = (self.rating.value or "").strip()
+        if not raw_rating.isdigit():
+            await interaction.response.send_message("❌ Rating harus berupa angka 1 sampai 5.", ephemeral=True)
+            return
+
+        rating_value = int(raw_rating)
+        if rating_value < 1 or rating_value > 5:
+            await interaction.response.send_message("❌ Rating hanya boleh dari 1 sampai 5.", ephemeral=True)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Rating hanya bisa dikirim dari dalam server.", ephemeral=True)
+            return
+
+        rating_cfg = get_rating_log_config(interaction.guild.id)
+        if not rating_cfg:
+            await interaction.response.send_message("❌ Channel log rating belum diset. Gunakan `/ratingsetup` dulu.", ephemeral=True)
+            return
+
+        log_channel = interaction.guild.get_channel(rating_cfg["channel_id"]) or bot.get_channel(rating_cfg["channel_id"])
+        if not isinstance(log_channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Channel log rating tidak ditemukan. Silakan set ulang dengan `/ratingsetup`.", ephemeral=True)
+            return
+
+        permissions = log_channel.permissions_for(interaction.guild.me)
+        if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+            await interaction.response.send_message(
+                f"❌ Saya belum punya izin kirim embed ke {log_channel.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        comment_text = (self.comment.value or "").strip()
+        filled_stars = "⭐" * rating_value
+        empty_stars = "☆" * (5 - rating_value)
+        review_color_map = {
+            1: 0xE74C3C,
+            2: 0xE67E22,
+            3: 0xF1C40F,
+            4: 0x2ECC71,
+            5: 0x00D1D1,
+        }
+        quoted_comment = f"> {comment_text}" if comment_text else "> _Tanpa comment_"
+        now_utc = datetime.now(timezone.utc)
+        embed = discord.Embed(
+            description=(
+                f"## {interaction.user.display_name} memberi review\n\n"
+                f"**{filled_stars}**{empty_stars} • **{rating_value}/5**\n\n"
+                f"{quoted_comment}"
+            ),
+            color=review_color_map.get(rating_value, 0x00D1D1),
+        )
+        embed.set_author(
+            name=str(interaction.user),
+            icon_url=interaction.user.display_avatar.url,
+        )
+        embed.add_field(name="Customer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Server", value=interaction.guild.name, inline=True)
+        embed.add_field(name="Dikirim", value=f"<t:{int(now_utc.timestamp())}:R>", inline=True)
+        embed.timestamp = now_utc
+        embed.set_footer(text=f"Terima kasih sudah berbelanja! • User ID: {interaction.user.id}")
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+
+        await log_channel.send(embed=embed)
+        log_debug(
+            "rating.submitted",
+            guild=interaction.guild.id,
+            user=interaction.user.id,
+            rating=rating_value,
+            has_comment=bool(comment_text),
+            channel=log_channel.id,
+        )
+        await interaction.response.send_message("✅ Rating berhasil dikirim. Terima kasih!", ephemeral=True)
+
+
+class RatingRequestView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Beri Rating",
+        style=discord.ButtonStyle.primary,
+        custom_id="rating:open_modal",
+    )
+    async def open_rating_modal(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        log_debug("rating.button_clicked", guild=getattr(interaction.guild, "id", None), user=getattr(interaction.user, "id", None))
+        await interaction.response.send_modal(RatingModal())
 
 
 # ── Bot ────────────────────────────────────────────────────────────────────────
@@ -867,6 +997,7 @@ class QRISBot(commands.Bot):
     async def setup_hook(self):
         timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
         self.http_session = aiohttp.ClientSession(timeout=timeout)
+        self.add_view(RatingRequestView())
         should_sync, remaining_seconds = should_sync_slash_commands()
         if not should_sync:
             print(f"⏭️ Slash command sync dilewati untuk hindari rate limit. Coba lagi dalam {remaining_seconds} detik.")
@@ -1545,6 +1676,8 @@ async def qris_help(interaction: discord.Interaction):
     embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway tanpa reply command.", inline=False)
     embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
     embed.add_field(name="/payment", value="Upload bukti bayar via slash dengan attachment. Contoh: `/payment order_number image`", inline=False)
+    embed.add_field(name="/ratingsetup 🔒", value="Set atau hapus channel log review/rating.", inline=False)
+    embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya tombol untuk buka form review.", inline=False)
     embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
     embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `!order` dan `!payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
     embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
@@ -2133,6 +2266,89 @@ async def payment_slash(interaction: discord.Interaction, order_number: str, ima
     await interaction.followup.send(embed=embed)
 
 
+# ── Rating System ───────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="ratingsetup", description="Set atau hapus channel log rating/review")
+@app_commands.describe(
+    channel="Channel tujuan log rating",
+    action="Pilih set atau remove",
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="set", value="set"),
+    app_commands.Choice(name="remove", value="remove"),
+])
+@app_commands.default_permissions(administrator=True)
+async def rating_setup(
+    interaction: discord.Interaction,
+    channel: Optional[app_commands.AppCommandChannel] = None,
+    action: Optional[app_commands.Choice[str]] = None,
+):
+    action_value = action.value if action else "set"
+
+    if action_value == "remove":
+        current_config = get_rating_log_config(interaction.guild.id)
+        if not current_config:
+            await interaction.response.send_message("⚠️ Channel log rating belum pernah diset.", ephemeral=True)
+            return
+
+        delete_rating_log_config(interaction.guild.id)
+        old_channel = interaction.guild.get_channel(current_config["channel_id"])
+        embed = discord.Embed(title="🗑️ Channel log rating berhasil dihapus", color=0xE67E22)
+        embed.add_field(
+            name="Channel Sebelumnya",
+            value=old_channel.mention if old_channel else str(current_config["channel_id"]),
+            inline=False,
+        )
+        embed.add_field(name="Status", value="Log review/rating dimatikan untuk server ini.", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    if channel is None:
+        await interaction.response.send_message("❌ Untuk action `set`, pilih text channel tujuan log rating.", ephemeral=True)
+        return
+
+    target_channel = resolve_text_channel(channel)
+    if target_channel is None:
+        await interaction.response.send_message(
+            "❌ Channel harus berupa text channel biasa, bukan forum, category, atau jenis channel lain.",
+            ephemeral=True,
+        )
+        return
+
+    permissions = target_channel.permissions_for(interaction.guild.me)
+    if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+        await interaction.response.send_message(
+            f"❌ Saya belum punya izin yang cukup di {target_channel.mention}. Pastikan ada izin `View Channel`, `Send Messages`, dan `Embed Links`.",
+            ephemeral=True,
+        )
+        return
+
+    set_rating_log_config(interaction.guild.id, target_channel.id)
+    embed = discord.Embed(title="✅ Channel log rating berhasil diset", color=0x2ECC71)
+    embed.add_field(name="Channel", value=target_channel.mention, inline=False)
+    embed.add_field(name="Kegunaan", value="Semua form rating yang dikirim user akan masuk ke channel ini.", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="rating", description="Kirim pesan rating dengan tombol review")
+@app_commands.default_permissions(administrator=True)
+async def rating_command(interaction: discord.Interaction):
+    rating_cfg = get_rating_log_config(interaction.guild.id)
+    if not rating_cfg:
+        await interaction.response.send_message("❌ Channel log rating belum diset. Gunakan `/ratingsetup` dulu.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="⭐ Beri Rating",
+        description="Klik tombol di bawah untuk isi form rating skala **1 sampai 5** dan comment opsional.",
+        color=0x1A1F5E,
+    )
+    embed.add_field(name="Yang Diisi", value="`Rating 1-5`\n`Comment` opsional", inline=False)
+    embed.add_field(name="Tujuan", value="Hasil review akan otomatis dikirim ke channel log rating server ini.", inline=False)
+    embed.set_footer(text="Gunakan tombol di bawah untuk membuka form rating.")
+    await interaction.response.send_message(embed=embed, view=RatingRequestView())
+
+
 # ── /setrole ───────────────────────────────────────────────────────────────────
 
 @bot.tree.command(name="setrole", description="Atur role yang boleh memakai !order dan !payment")
@@ -2229,7 +2445,7 @@ async def leaderboard_set(
         )
         return
 
-    target_channel = resolve_leaderboard_channel(channel)
+    target_channel = resolve_text_channel(channel)
     if target_channel is None:
         await interaction.response.send_message(
             "❌ Channel harus berupa text channel biasa, bukan forum, category, atau jenis channel lain.",
