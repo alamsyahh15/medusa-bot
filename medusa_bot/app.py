@@ -4,13 +4,12 @@ from discord.ext import commands
 
 from .config import DISCORD_TOKEN, ENABLE_MEMBERS_INTENT, HTTP_TIMEOUT_SECONDS, set_bot_meta_value, should_sync_slash_commands
 from .lifecycle import register_lifecycle
-from .prefix_commands import register_prefix_commands
 from .rating import RatingRequestView
 from .slash_commands import register_slash_commands
 
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = False
 intents.members = ENABLE_MEMBERS_INTENT
 
 
@@ -45,7 +44,6 @@ class QRISBot(commands.Bot):
 
 def create_bot() -> QRISBot:
     bot = QRISBot()
-    register_prefix_commands(bot)
     register_slash_commands(bot)
     register_lifecycle(bot)
     return bot
@@ -57,4 +55,3 @@ def run_bot():
         print("❌ DISCORD_TOKEN belum diset!")
     else:
         bot.run(DISCORD_TOKEN)
-

@@ -204,4 +204,3 @@ def get_order_role_ids(guild_id: int):
     if legacy_role_id:
         return [int(legacy_role_id)]
     return []
-

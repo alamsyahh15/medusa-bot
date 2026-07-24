@@ -220,9 +220,9 @@ def build_calc_usage_embed() -> discord.Embed:
     embed = discord.Embed(title="🧮 Kalkulator Harga", color=0x1A1F5E)
     embed.description = (
         "**Robux -> IDR**\n"
-        "`!calc <robux>`\n\n"
+        "`/calc value:<robux>`\n\n"
         "**IDR -> Robux**\n"
-        "`!calc <amount>rb`"
+        "`/calc value:<amount>rb`"
     )
     embed.add_field(
         name="Metode yang dihitung",
@@ -235,13 +235,13 @@ def build_calc_usage_embed() -> discord.Embed:
             "`Instant Group` = Rp 138.000 / 1.000 Robux\n"
             "`Gamepass` = Rp 128.000 / 1.000 Robux\n"
             "`Gig` = Rp 115.000 / 1.000 Robux\n"
-            "`Send` = Rp 143.000 / 1.000 Robux"
+            "`Send` = Rp 140.000 / 1.000 Robux"
         ),
         inline=False,
     )
     embed.add_field(
         name="Contoh",
-        value="`!calc 500`\n`!calc 15k`\n`!calc 100rb`",
+        value="`/calc value:500`\n`/calc value:15k`\n`/calc value:100rb`",
         inline=False,
     )
     embed.set_footer(text=f"Semua metode dihitung sekaligus • Minimum: {CALC_MIN_ROBUX} Robux")

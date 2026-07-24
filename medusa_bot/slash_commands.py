@@ -24,6 +24,8 @@ from .config import (
 )
 from .helpers import (
     apply_admin_fee,
+    build_calc_result_embed,
+    build_calc_usage_embed,
     build_roblox_group_share_url,
     ensure_order_interaction_access,
     extract_ticket_identity,
@@ -34,10 +36,12 @@ from .helpers import (
     generate_qris_image,
     get_configured_roblox_group_ids,
     get_group_membership,
+    get_message_image_url,
     get_order_roles,
     log_debug,
     lookup_roblox_user,
     make_dynamic_qris,
+    parse_calc_value,
     parse_robux_amount_input,
     place_external_order,
     resolve_text_channel,
@@ -49,7 +53,144 @@ from .helpers import (
 from .rating import RatingRequestView
 
 
+class PaymentContextModal(discord.ui.Modal, title="Upload Payment"):
+    def __init__(self, bot, message: discord.Message):
+        super().__init__()
+        self.bot = bot
+        self.message = message
+        self.order_number = discord.ui.TextInput(
+            label="Order Number",
+            placeholder="Contoh: EXT-ABCDEFGH",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.order_number)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await ensure_order_interaction_access(interaction):
+            return
+
+        order_number = (self.order_number.value or "").strip()
+        if not order_number:
+            await interaction.response.send_message("❌ Order number wajib diisi.", ephemeral=True)
+            return
+
+        image_url = get_message_image_url(self.message)
+        if not image_url:
+            await interaction.response.send_message(
+                "❌ Message yang dipilih tidak punya gambar bukti pembayaran.",
+                ephemeral=True,
+            )
+            return
+
+        log_debug(
+            "payment.context_submit",
+            author=getattr(interaction.user, "id", None),
+            guild=getattr(interaction.guild, "id", None),
+            order_number=order_number,
+            message_id=getattr(self.message, "id", None),
+        )
+        await interaction.response.defer(thinking=True)
+        try:
+            upload_response = await upload_payment_proof(self.bot.http_session, order_number, image_url)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal upload payment proof: {e}")
+            return
+
+        if not upload_response or not upload_response.get("success"):
+            error_message = upload_response["message"] if upload_response and upload_response.get("message") else "Gagal upload payment proof."
+            await interaction.followup.send(f"❌ {error_message}")
+            return
+
+        upload_data = upload_response.get("data") or {}
+        embed = discord.Embed(
+            title="✅ Payment berhasil diupload",
+            description=upload_response.get("message", "Payment uploaded successfully."),
+            color=0x2ECC71,
+        )
+        embed.add_field(name="Order Number", value=upload_data.get("order_number", order_number), inline=True)
+        embed.add_field(name="Status", value=upload_data.get("status", "done"), inline=True)
+        embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
+        await interaction.followup.send(embed=embed)
+
+
 def register_slash_commands(bot):
+    @bot.tree.command(name="qris", description="Generate QRIS dinamis")
+    @app_commands.describe(amount="Nominal IDR, contoh 26000")
+    async def qris_generate(interaction: discord.Interaction, amount: int):
+        guild_config = get_guild_config(interaction.guild.id)
+        if not guild_config or not guild_config.get("static_qris") or not guild_config.get("merchant_name"):
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="⚙️ QRIS belum dikonfigurasi",
+                    description="Admin perlu setup dulu dengan `/qrissetup`",
+                    color=0xE67E22,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if amount <= 0:
+            await interaction.response.send_message("❌ Nominal harus lebih dari 0.", ephemeral=True)
+            return
+        if amount > 50_000_000:
+            await interaction.response.send_message("❌ Melebihi batas maksimum Rp 50.000.000.", ephemeral=True)
+            return
+
+        original_amount = amount
+        final_amount = apply_admin_fee(amount)
+        await interaction.response.defer(thinking=True)
+        try:
+            payload = make_dynamic_qris(guild_config["static_qris"], final_amount)
+            image_bytes = generate_qris_image(
+                payload,
+                final_amount,
+                guild_config["merchant_name"],
+                original_amount=original_amount,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal generate QR: {e}")
+            return
+
+        fee_amount = final_amount - original_amount
+        desc = (
+            f"Subtotal: **{format_rupiah(original_amount)}**\n"
+            f"Biaya admin (0.5%): **{format_rupiah(fee_amount)}**\n"
+            f"Total bayar: **{format_rupiah(final_amount)}**"
+        )
+        file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
+        embed = discord.Embed(title="💳 QRIS Payment", description=desc, color=0x1A1F5E)
+        embed.set_image(url=f"attachment://qris_{final_amount}.png")
+        embed.set_footer(text=f"E-Wallet transaction cannot be refunded • {guild_config['merchant_name']}")
+        await interaction.followup.send(file=file, embed=embed)
+
+    @bot.tree.command(name="calc", description="Kalkulasi Robux dan IDR")
+    @app_commands.describe(value="Contoh: 500, 15k, atau 100rb")
+    async def calc_slash(interaction: discord.Interaction, value: Optional[str] = None):
+        if not value:
+            await interaction.response.send_message(embed=build_calc_usage_embed(), ephemeral=True)
+            return
+
+        parsed = parse_calc_value(value)
+        if not parsed:
+            await interaction.response.send_message(
+                "❌ Format tidak valid. Contoh: `/calc value:500`, `/calc value:15k`, atau `/calc value:100rb`",
+                ephemeral=True,
+            )
+            return
+
+        calc_mode, amount = parsed
+        if amount <= 0:
+            await interaction.response.send_message("❌ Nilai harus lebih dari 0.", ephemeral=True)
+            return
+        if calc_mode == "robux" and amount < CALC_MIN_ROBUX:
+            await interaction.response.send_message(
+                f"❌ Minimum kalkulasi adalah **{CALC_MIN_ROBUX} Robux**.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(embed=build_calc_result_embed(calc_mode, amount))
+
     @bot.tree.command(name="qrissetup", description="Setup QRIS untuk server ini (Admin only)")
     @app_commands.describe(
         static_payload="Payload QRIS statis dari QR merchant kamu",
@@ -67,7 +208,7 @@ def register_slash_commands(bot):
         embed.add_field(name="Merchant", value=merchant_name, inline=False)
         embed.add_field(name="Payload (preview)", value=f"`{static_payload[:50]}...`", inline=False)
         embed.add_field(name="Biaya Admin", value=fee_status, inline=False)
-        embed.add_field(name="Test sekarang", value="`!qris 10000`", inline=False)
+        embed.add_field(name="Test sekarang", value="`/qris amount:10000`", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="qrisinfo", description="Lihat konfigurasi QRIS server ini")
@@ -99,21 +240,16 @@ def register_slash_commands(bot):
     @bot.tree.command(name="qrishelp", description="Tampilkan semua perintah QRIS Bot")
     async def qris_help(interaction: discord.Interaction):
         embed = discord.Embed(title="📖 QRIS Bot — Bantuan", color=0x1A1F5E)
-        embed.add_field(name="!qris <nominal>", value="Generate QRIS. Contoh: `!qris 26000`", inline=False)
-        embed.add_field(name="!calc <nilai>", value="Kalkulasi Robux/IDR untuk semua metode sekaligus. Contoh: `!calc 500`, `!calc 15k`, atau `!calc 100rb`", inline=False)
-        embed.add_field(name="!check <username>", value="Cek apakah user Roblox sudah 3 hari di group.", inline=False)
-        embed.add_field(name="!giveaway", value="Reply ke message pendaftaran giveaway untuk cek member Discord Medusablox dan join group Roblox.", inline=False)
-        embed.add_field(name="!order <robux>", value="Reply ke hasil `!check` yang eligible untuk buat order. Minimum `125` Robux. Bisa dibatasi via `/setrole`.", inline=False)
-        embed.add_field(name="!payment <order_number>", value="Reply ke message customer yang berisi bukti bayar untuk upload payment. Bisa dibatasi via `/setrole`.", inline=False)
-        embed.add_field(name="/check", value="Versi slash dari cek Roblox. Contoh: `/check username_roblox`", inline=False)
-        embed.add_field(name="/giveaway", value="Versi slash untuk cek giveaway. Contoh: `/giveaway discord_user_id roblox_username`", inline=False)
-        embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway tanpa reply command.", inline=False)
+        embed.add_field(name="/qris", value="Generate QRIS. Contoh: `/qris amount:26000`", inline=False)
+        embed.add_field(name="/calc", value="Kalkulasi Robux/IDR untuk semua metode sekaligus. Contoh: `/calc value:500`, `/calc value:15k`, atau `/calc value:100rb`", inline=False)
+        embed.add_field(name="/check", value="Cek apakah user Roblox sudah 3 hari di group. Contoh: `/check username_roblox`", inline=False)
+        embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway.", inline=False)
         embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
-        embed.add_field(name="/payment", value="Upload bukti bayar via slash dengan attachment. Contoh: `/payment order_number image`", inline=False)
+        embed.add_field(name="Apps > Upload Payment", value="Klik kanan message bukti bayar lalu isi `order_number` di popup modal.", inline=False)
         embed.add_field(name="/ratingsetup 🔒", value="Set atau hapus channel log review/rating.", inline=False)
         embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya tombol untuk buka form review.", inline=False)
-        embed.add_field(name="!leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
-        embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `!order` dan `!payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
+        embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
+        embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
         embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
         embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
         embed.add_field(name="/qrisreset 🔒", value="Hapus konfigurasi QRIS. (Admin only)", inline=False)
@@ -214,6 +350,15 @@ def register_slash_commands(bot):
             for index, group_id in enumerate(missing_group_ids, start=1):
                 view.add_item(discord.ui.Button(label=f"Join Group {index}", url=build_roblox_group_share_url(group_id)))
         await send_interaction_message(interaction, embed=embed, view=view)
+
+    @bot.tree.command(name="leaderboard", description="Tampilkan leaderboard Top 3")
+    async def leaderboard_slash(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        image_bytes = await fetch_and_render_leaderboard(bot.http_session)
+        if not image_bytes:
+            await interaction.followup.send("❌ Gagal fetch data leaderboard.")
+            return
+        await interaction.followup.send(file=discord.File(image_bytes, filename="leaderboard.png"))
 
     @bot.tree.command(name="giveaway", description="Cek kelolosan giveaway via input manual")
     @app_commands.describe(
@@ -488,6 +633,18 @@ def register_slash_commands(bot):
         embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
         await interaction.followup.send(embed=embed)
 
+    @bot.tree.context_menu(name="Upload Payment")
+    async def payment_context_menu(interaction: discord.Interaction, message: discord.Message):
+        if not await ensure_order_interaction_access(interaction):
+            return
+        if not get_message_image_url(message):
+            await interaction.response.send_message(
+                "❌ Message yang dipilih tidak punya gambar bukti pembayaran.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(PaymentContextModal(bot, message))
+
     @bot.tree.command(name="ratingsetup", description="Set atau hapus channel log rating/review")
     @app_commands.describe(channel="Channel tujuan log rating", action="Pilih set atau remove")
     @app_commands.choices(action=[app_commands.Choice(name="set", value="set"), app_commands.Choice(name="remove", value="remove")])
@@ -538,7 +695,7 @@ def register_slash_commands(bot):
         embed.set_footer(text="Gunakan tombol di bawah untuk membuka form rating.")
         await interaction.response.send_message(embed=embed, view=RatingRequestView())
 
-    @bot.tree.command(name="setrole", description="Atur role yang boleh memakai !order dan !payment")
+    @bot.tree.command(name="setrole", description="Atur role yang boleh memakai /order dan upload payment")
     @app_commands.describe(action="Pilih add, remove, atau clear", role="Role target untuk add/remove")
     @app_commands.choices(action=[app_commands.Choice(name="add", value="add"), app_commands.Choice(name="remove", value="remove"), app_commands.Choice(name="clear", value="clear")])
     @app_commands.default_permissions(administrator=True)
@@ -557,7 +714,7 @@ def register_slash_commands(bot):
             set_order_role_config(interaction.guild.id, current_role_ids)
             updated_roles = get_order_roles(interaction.guild)
             active_roles_text = ", ".join(item.mention for item in updated_roles)
-            note_text = f"Role {role.mention} ditambahkan ke daftar akses `!order` dan `!payment`."
+            note_text = f"Role {role.mention} ditambahkan ke daftar akses `/order`, `/payment`, dan `Apps > Upload Payment`."
         else:
             updated_role_ids = [role_id for role_id in current_role_ids if role_id != role.id]
             set_order_role_config(interaction.guild.id, updated_role_ids)
@@ -570,7 +727,7 @@ def register_slash_commands(bot):
         embed = discord.Embed(title="✅ Role order/payment berhasil diupdate", color=0x2ECC71)
         embed.add_field(name="Action", value=action.value, inline=True)
         embed.add_field(name="Role Aktif", value=active_roles_text, inline=False)
-        embed.add_field(name="Berlaku untuk", value="`!order` dan `!payment`", inline=False)
+        embed.add_field(name="Berlaku untuk", value="`/order`, `/payment`, dan `Apps > Upload Payment`", inline=False)
         embed.add_field(name="Catatan", value=note_text, inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -635,4 +792,3 @@ def register_slash_commands(bot):
         embed = discord.Embed(title="✅ Leaderboard berhasil diupdate!", color=0x2ECC71)
         embed.add_field(name="Channel", value=channel.mention if channel else str(lb_cfg["channel_id"]), inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
-

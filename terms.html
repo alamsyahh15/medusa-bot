@@ -126,7 +126,7 @@
 
   <header>
     <h1>Terms of Service — Medusa Helper</h1>
-    <div class="updated">Last updated: July 21, 2026</div>
+    <div class="updated">Last updated: July 25, 2026</div>
   </header>
 
   <div class="card">
@@ -134,15 +134,15 @@
   </div>
 
   <h2>1. Description of Service</h2>
-  <p>The Bot provides the following features via Discord slash commands and prefix commands:</p>
+  <p>The Bot provides the following features via Discord slash commands and message context menu actions:</p>
   <ul>
-    <li><strong>QRIS payment generation</strong> (<code>!qris</code>) — generates dynamic QRIS payment QR codes for Indonesian e-wallet/bank transfers, configured per server via <code>/qrissetup</code>.</li>
-    <li><strong>Robux/IDR conversion calculator</strong> (<code>!calc</code>).</li>
-    <li><strong>Roblox group membership eligibility check</strong> (<code>!check</code>) — verifies whether a Roblox account has been a member of a designated Roblox group for the required duration.</li>
-    <li><strong>Giveaway eligibility verification</strong> (<code>!giveaway</code>) — checks Discord server membership and Roblox group membership against giveaway requirements.</li>
-    <li><strong>Order placement</strong> (<code>!order</code>) — submits Robux orders to our backend order-processing system on your behalf.</li>
-    <li><strong>Payment proof submission</strong> (<code>!payment</code>) — uploads payment confirmation images to our backend for order verification.</li>
-    <li><strong>Leaderboard display</strong> (<code>!leaderboard</code>) — displays top buyers based on cumulative Robux purchases.</li>
+    <li><strong>QRIS payment generation</strong> (<code>/qris</code>) — generates dynamic QRIS payment QR codes for Indonesian e-wallet and bank transfers, configured per server via <code>/qrissetup</code>.</li>
+    <li><strong>Robux/IDR conversion calculator</strong> (<code>/calc</code>).</li>
+    <li><strong>Roblox group membership eligibility check</strong> (<code>/check</code>) — verifies whether a Roblox account has been a member of a designated Roblox group for the required duration.</li>
+    <li><strong>Giveaway eligibility verification</strong> (<code>/giveaway</code> and <code>Apps &gt; Giveaway Check</code>) — checks Discord server membership and Roblox group membership against giveaway requirements.</li>
+    <li><strong>Order placement</strong> (<code>/order</code>) — submits Robux orders to our backend order-processing system on your behalf.</li>
+    <li><strong>Payment proof submission</strong> (<code>/payment</code> and <code>Apps &gt; Upload Payment</code>) — uploads payment confirmation images to our backend for order verification.</li>
+    <li><strong>Leaderboard display</strong> (<code>/leaderboard</code>) — displays top buyers based on cumulative Robux purchases.</li>
   </ul>
   <p>The Bot is a tool that facilitates these functions; it does not itself hold custody of funds beyond generating payment instructions and relaying data to our backend and to Roblox's public APIs.</p>
 
@@ -155,9 +155,9 @@
 
   <h2>3. Orders and Payments</h2>
   <ul>
-    <li>Orders placed via <code>!order</code> are submitted to our backend order-processing system and are subject to eligibility checks (e.g. Roblox group membership duration) performed via <code>!check</code>.</li>
-    <li>Payment amounts generated via <code>!qris</code> may include an administrative fee, disclosed at the time of generation, added on top of the requested subtotal.</li>
-    <li>Payment confirmations submitted via <code>!payment</code> are reviewed and processed by our team; submitting a payment proof does not guarantee automatic or immediate order fulfillment.</li>
+    <li>Orders placed via <code>/order</code> are submitted to our backend order-processing system and are subject to eligibility checks (e.g. Roblox group membership duration) performed via <code>/check</code>.</li>
+    <li>Payment amounts generated via <code>/qris</code> may include an administrative fee, disclosed at the time of generation, added on top of the requested subtotal.</li>
+    <li>Payment confirmations submitted via <code>/payment</code> or <code>Apps &gt; Upload Payment</code> are reviewed and processed by our team; submitting a payment proof does not guarantee automatic or immediate order fulfillment.</li>
     <li>E-wallet and bank transfer payments made through generated QRIS codes are, in general, <strong>non-refundable</strong> once completed, except where required by applicable law or at our discretion in cases of verified error (e.g. duplicate payment, incorrect amount due to a Bot malfunction).</li>
   </ul>
   <div class="warn">
@@ -177,13 +177,13 @@
     <li>Use the Bot to submit false, fraudulent, or manipulated data (e.g. fake payment proofs, spoofed Roblox/Discord identity information) to gain orders, giveaways, or rewards you are not entitled to.</li>
     <li>Attempt to exploit, abuse, reverse-engineer, or interfere with the Bot's operation, rate limits, or underlying infrastructure.</li>
     <li>Use the Bot for any unlawful purpose, including money laundering, fraud, or circumventing Roblox's or Discord's Terms of Service.</li>
-    <li>Use the Bot's commands (e.g. <code>!order</code>, <code>!payment</code>) without the role permissions configured by your server's administrators.</li>
+    <li>Use the Bot's restricted actions (e.g. <code>/order</code>, <code>/payment</code>, <code>Apps &gt; Upload Payment</code>) without the role permissions configured by your server's administrators.</li>
   </ul>
 
   <h2>6. Server Administrator Responsibilities</h2>
   <ul>
     <li>Server administrators are solely responsible for the accuracy of QRIS payment configuration (<code>/qrissetup</code>) they submit, including merchant name and payload.</li>
-    <li>Administrators are responsible for managing role-based access to <code>!order</code> and <code>!payment</code> via <code>/setrole</code>, and for any misuse by roles/members they grant access to.</li>
+    <li>Administrators are responsible for managing role-based access to <code>/order</code>, <code>/payment</code>, and <code>Apps &gt; Upload Payment</code> via <code>/setrole</code>, and for any misuse by roles or members they grant access to.</li>
   </ul>
 
   <h2>7. Disclaimers</h2>
