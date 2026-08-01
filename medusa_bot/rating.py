@@ -86,7 +86,13 @@ class RatingModal(discord.ui.Modal, title="Kirim Rating"):
         embed.set_footer(text=f"Terima kasih sudah berbelanja! • Verified Customer")
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
 
-        await log_channel.send(embed=embed)
+        sent_msg = await log_channel.send(embed=embed)
+        try:
+            await sent_msg.add_reaction("✅")
+            await sent_msg.add_reaction("❤️")
+        except (discord.HTTPException, discord.Forbidden):
+            pass
+
         log_debug(
             "rating.submitted",
             guild=interaction.guild.id,
