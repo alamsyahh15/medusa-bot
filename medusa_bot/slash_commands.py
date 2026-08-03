@@ -215,22 +215,48 @@ class MarketplaceOrderModal(discord.ui.Modal, title="Form Order Merchant"):
             return
 
         order_data = res.get("data") or {}
-        order_num = order_data.get("order_number") or order_data.get("order_id") or "-"
+        order_num = order_data.get("order_number") or order_data.get("order_id") or res.get("order_number") or "-"
+
+        original_amount = self.total_price
+        final_amount = apply_admin_fee(original_amount)
+        fee_amount = final_amount - original_amount
 
         embed = discord.Embed(
             title="🛍️ Marketplace Order Berhasil!",
             description=res.get("message", "Order marketplace berhasil dibuat."),
             color=0x2ECC71,
         )
+        embed.add_field(name="Order Number", value=f"`{order_num}`", inline=False)
         embed.add_field(name="Merchant Code", value=self.merchant_code, inline=True)
         embed.add_field(name="Customer Name", value=cust_name, inline=True)
         embed.add_field(name="Product Name", value=self.product_name, inline=True)
-        embed.add_field(name="Total Price", value=format_rupiah(self.total_price), inline=True)
-        if order_num != "-":
-            embed.add_field(name="Order Number", value=f"`{order_num}`", inline=False)
+        embed.add_field(name="Subtotal", value=format_rupiah(original_amount), inline=True)
+        embed.add_field(name="Biaya Admin (0.5%)", value=format_rupiah(fee_amount), inline=True)
+        embed.add_field(name="Total Bayar", value=format_rupiah(final_amount), inline=True)
+
+        file = None
+        guild_config = get_guild_config(interaction.guild.id) if interaction.guild else None
+        if guild_config and guild_config.get("static_qris") and guild_config.get("merchant_name"):
+            try:
+                payload = make_dynamic_qris(guild_config["static_qris"], final_amount)
+                image_bytes = generate_qris_image(
+                    payload,
+                    final_amount,
+                    guild_config["merchant_name"],
+                    original_amount=original_amount,
+                )
+                filename = f"qris_{final_amount}.png"
+                file = discord.File(image_bytes, filename=filename)
+                embed.set_image(url=f"attachment://{filename}")
+            except Exception as e:
+                log_debug("marketplace_qris_gen_error", error=str(e))
+
         embed.set_footer(text="Gunakan /paymentmerchant atau Apps > Upload Payment Merchant untuk mengunggah bukti bayar.")
 
-        await interaction.followup.send(embed=embed)
+        if file:
+            await interaction.followup.send(file=file, embed=embed)
+        else:
+            await interaction.followup.send(embed=embed)
 
 
 class EmptyProductSelect(discord.ui.Select):
@@ -260,9 +286,12 @@ class ProductSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        self.view.selected_product_name = self.values[0]
+        selected_prod = self.values[0]
+        self.view.selected_product_name = selected_prod
+        for opt in self.options:
+            opt.default = (opt.value == selected_prod)
         for prod in self.view.products:
-            if prod.get("product_name") == self.values[0]:
+            if prod.get("product_name") == selected_prod:
                 self.view.selected_product_price = prod.get("price", 0)
                 break
         self.view.update_order_button_state()
@@ -291,6 +320,9 @@ class MerchantSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         merchant_code = self.values[0]
         self.view.selected_merchant_code = merchant_code
+        for opt in self.options:
+            opt.default = (opt.value == merchant_code)
+
         merchant_data = get_merchant(merchant_code) or {}
         products = merchant_data.get("products", [])
         self.view.products = products
