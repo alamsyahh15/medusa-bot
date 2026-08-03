@@ -18,6 +18,19 @@ ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API = os.getenv(
     "ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API",
     "http://localhost:8000/api/roblox/external/order/upload-payment",
 )
+MARKETPLACE_BASE_DOMAIN = os.getenv(
+    "MARKETPLACE_BASE_DOMAIN",
+    os.getenv("EXTERNAL_API_DOMAIN", "http://localhost:8000"),
+)
+MARKETPLACE_ORDER_API = os.getenv(
+    "MARKETPLACE_ORDER_API",
+    f"{MARKETPLACE_BASE_DOMAIN.rstrip('/')}/api/v1/roblox/external/marketplace/order",
+)
+MARKETPLACE_UPLOAD_PAYMENT_API = os.getenv(
+    "MARKETPLACE_UPLOAD_PAYMENT_API",
+    f"{MARKETPLACE_BASE_DOMAIN.rstrip('/')}/api/v1/roblox/external/marketplace/order/upload-payment",
+)
+MERCHANT_CONFIG_FILE = "merchant_config.json"
 MEDUSABLOX_GUILD_ID = 1479845174430404738
 MEDUSABLOX_DISCORD_INVITE_URL = "https://discord.gg/BJ6hQE8zAb"
 SLASH_SYNC_COOLDOWN_SECONDS = int(os.getenv("SLASH_SYNC_COOLDOWN_SECONDS", "900"))
@@ -204,3 +217,95 @@ def get_order_role_ids(guild_id: int):
     if legacy_role_id:
         return [int(legacy_role_id)]
     return []
+
+
+def load_merchant_config() -> dict:
+    if os.path.exists(MERCHANT_CONFIG_FILE):
+        with open(MERCHANT_CONFIG_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
+    return {}
+
+
+def save_merchant_config(config: dict):
+    with open(MERCHANT_CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def set_merchant_config(merchant_code: str, merchant_name: str) -> dict:
+    config = load_merchant_config()
+    code_upper = merchant_code.strip().upper()
+    if code_upper not in config:
+        config[code_upper] = {
+            "merchant_code": code_upper,
+            "merchant_name": merchant_name.strip(),
+            "products": [],
+        }
+    else:
+        config[code_upper]["merchant_code"] = code_upper
+        config[code_upper]["merchant_name"] = merchant_name.strip()
+    save_merchant_config(config)
+    return config[code_upper]
+
+
+def add_merchant_product(merchant_code: str, product_name: str, price: int) -> tuple[bool, str]:
+    config = load_merchant_config()
+    code_upper = merchant_code.strip().upper()
+    if code_upper not in config:
+        return False, f"Merchant code `{code_upper}` belum terdaftar di `merchant_config.json`."
+
+    products = config[code_upper].get("products", [])
+    product_name_clean = product_name.strip()
+
+    updated = False
+    for prod in products:
+        if prod.get("product_name", "").lower() == product_name_clean.lower():
+            prod["product_name"] = product_name_clean
+            prod["price"] = price
+            updated = True
+            break
+
+    if not updated:
+        products.append({"product_name": product_name_clean, "price": price})
+
+    config[code_upper]["products"] = products
+    save_merchant_config(config)
+    action_text = "diupdate" if updated else "ditambahkan"
+    return True, f"Produk `{product_name_clean}` berhasil {action_text} ke merchant `{code_upper}`."
+
+
+def get_merchant_codes() -> list[str]:
+    return list(load_merchant_config().keys())
+
+
+def get_merchant(merchant_code: str) -> Optional[dict]:
+    return load_merchant_config().get(merchant_code.strip().upper())
+
+
+def delete_merchant_product(merchant_code: str, product_name: str) -> tuple[bool, str]:
+    config = load_merchant_config()
+    code_upper = merchant_code.strip().upper()
+    if code_upper not in config:
+        return False, f"Merchant code `{code_upper}` belum terdaftar di `merchant_config.json`."
+
+    products = config[code_upper].get("products", [])
+    product_name_clean = product_name.strip()
+
+    new_products = [p for p in products if p.get("product_name", "").lower() != product_name_clean.lower()]
+    if len(new_products) == len(products):
+        return False, f"Produk `{product_name_clean}` tidak ditemukan pada merchant `{code_upper}`."
+
+    config[code_upper]["products"] = new_products
+    save_merchant_config(config)
+    return True, f"Produk `{product_name_clean}` berhasil dihapus dari merchant `{code_upper}`."
+
+
+def get_merchant_product_names(merchant_code: str) -> list[str]:
+    merchant = get_merchant(merchant_code)
+    if not merchant:
+        return []
+    return [p.get("product_name", "") for p in merchant.get("products", []) if p.get("product_name")]
+
+

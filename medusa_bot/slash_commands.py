@@ -9,16 +9,23 @@ from .config import (
     MEDUSABLOX_DISCORD_INVITE_URL,
     MEDUSABLOX_GUILD_ID,
     ROBLOX_API_KEY,
+    add_merchant_product,
     delete_guild_config,
     delete_leaderboard_config,
+    delete_merchant_product,
     delete_rating_log_config,
     get_guild_config,
     get_leaderboard_config,
+    get_merchant,
+    get_merchant_codes,
+    get_merchant_product_names,
     get_order_role_ids,
     get_rating_log_config,
     has_qris_config,
+    load_merchant_config,
     set_guild_config,
     set_leaderboard_config,
+    set_merchant_config,
     set_order_role_config,
     set_rating_log_config,
 )
@@ -44,9 +51,11 @@ from .helpers import (
     parse_calc_value,
     parse_robux_amount_input,
     place_external_order,
+    place_marketplace_order,
     resolve_text_channel,
     sanitize_roblox_username,
     send_interaction_message,
+    upload_marketplace_payment_proof,
     upload_payment_proof,
     validate_qris,
 )
@@ -112,6 +121,247 @@ class PaymentContextModal(discord.ui.Modal, title="Upload Payment"):
         embed.add_field(name="Status", value=upload_data.get("status", "done"), inline=True)
         embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
         await interaction.followup.send(embed=embed)
+
+
+class PaymentMerchantContextModal(discord.ui.Modal, title="Upload Payment Merchant"):
+    def __init__(self, bot, message: discord.Message):
+        super().__init__()
+        self.bot = bot
+        self.message = message
+        self.order_number = discord.ui.TextInput(
+            label="Order Number",
+            placeholder="Contoh: MPO-MELONZ-FMJ1WN",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.order_number)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        order_number = (self.order_number.value or "").strip()
+        if not order_number:
+            await interaction.response.send_message("❌ Order number wajib diisi.", ephemeral=True)
+            return
+
+        image_url = get_message_image_url(self.message)
+        if not image_url:
+            await interaction.response.send_message(
+                "❌ Message yang dipilih tidak punya gambar bukti pembayaran.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+        try:
+            upload_response = await upload_marketplace_payment_proof(self.bot.http_session, order_number, image_url)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal upload payment proof: {e}")
+            return
+
+        if not upload_response or not upload_response.get("success"):
+            error_message = upload_response["message"] if upload_response and upload_response.get("message") else "Gagal upload payment proof."
+            await interaction.followup.send(f"❌ {error_message}")
+            return
+
+        upload_data = upload_response.get("data") or {}
+        embed = discord.Embed(
+            title="✅ Payment Merchant Berhasil Diupload",
+            description=upload_response.get("message", "Payment uploaded successfully."),
+            color=0x2ECC71,
+        )
+        embed.add_field(name="Order Number", value=upload_data.get("order_number", order_number), inline=True)
+        embed.add_field(name="Status", value=upload_data.get("status", "done"), inline=True)
+        embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
+        await interaction.followup.send(embed=embed)
+
+
+class MarketplaceOrderModal(discord.ui.Modal, title="Form Order Merchant"):
+    def __init__(self, bot, merchant_code: str, product_name: str, total_price: int):
+        super().__init__()
+        self.bot = bot
+        self.merchant_code = merchant_code
+        self.product_name = product_name
+        self.total_price = total_price
+
+        self.customer_name = discord.ui.TextInput(
+            label="Customer Name",
+            placeholder="Masukkan nama customer",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.customer_name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cust_name = (self.customer_name.value or "").strip()
+        if not cust_name:
+            await interaction.response.send_message("❌ Customer name wajib diisi.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True)
+        try:
+            res = await place_marketplace_order(
+                self.bot.http_session,
+                merchant_code=self.merchant_code,
+                customer_name=cust_name,
+                product_name=self.product_name,
+                total_price=self.total_price,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal mengirim order: {e}")
+            return
+
+        if not res or not res.get("success"):
+            err_msg = res.get("message", "Gagal memproses order marketplace.") if res else "Gagal memproses order."
+            await interaction.followup.send(f"❌ {err_msg}")
+            return
+
+        order_data = res.get("data") or {}
+        order_num = order_data.get("order_number") or order_data.get("order_id") or "-"
+
+        embed = discord.Embed(
+            title="🛍️ Marketplace Order Berhasil!",
+            description=res.get("message", "Order marketplace berhasil dibuat."),
+            color=0x2ECC71,
+        )
+        embed.add_field(name="Merchant Code", value=self.merchant_code, inline=True)
+        embed.add_field(name="Customer Name", value=cust_name, inline=True)
+        embed.add_field(name="Product Name", value=self.product_name, inline=True)
+        embed.add_field(name="Total Price", value=format_rupiah(self.total_price), inline=True)
+        if order_num != "-":
+            embed.add_field(name="Order Number", value=f"`{order_num}`", inline=False)
+        embed.set_footer(text="Gunakan /paymentmerchant atau Apps > Upload Payment Merchant untuk mengunggah bukti bayar.")
+
+        await interaction.followup.send(embed=embed)
+
+
+class EmptyProductSelect(discord.ui.Select):
+    def __init__(self):
+        options = [discord.SelectOption(label="Tidak ada produk tersedia", value="none")]
+        super().__init__(placeholder="Tidak ada produk pada merchant ini", disabled=True, options=options)
+
+
+class ProductSelect(discord.ui.Select):
+    def __init__(self, products: list):
+        options = []
+        for prod in products[:25]:
+            p_name = prod.get("product_name", "")
+            p_price = prod.get("price", 0)
+            options.append(
+                discord.SelectOption(
+                    label=p_name[:100],
+                    value=p_name,
+                    description=format_rupiah(p_price),
+                )
+            )
+        super().__init__(
+            placeholder="Pilih Produk...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_product_name = self.values[0]
+        for prod in self.view.products:
+            if prod.get("product_name") == self.values[0]:
+                self.view.selected_product_price = prod.get("price", 0)
+                break
+        self.view.update_order_button_state()
+        await interaction.response.edit_message(view=self.view)
+
+
+class MerchantSelect(discord.ui.Select):
+    def __init__(self, merchants: dict):
+        options = []
+        for code, data in list(merchants.items())[:25]:
+            m_name = data.get("merchant_name", code)
+            options.append(
+                discord.SelectOption(
+                    label=f"{m_name} ({code})"[:100],
+                    value=code,
+                    description=f"Code: {code}",
+                )
+            )
+        super().__init__(
+            placeholder="Pilih Merchant...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        merchant_code = self.values[0]
+        self.view.selected_merchant_code = merchant_code
+        merchant_data = get_merchant(merchant_code) or {}
+        products = merchant_data.get("products", [])
+        self.view.products = products
+        self.view.selected_product_name = None
+        self.view.selected_product_price = None
+
+        self.view.remove_product_select()
+        if products:
+            self.view.add_product_select(products)
+        else:
+            self.view.add_empty_product_select()
+
+        self.view.update_order_button_state()
+        await interaction.response.edit_message(view=self.view)
+
+
+class OrderButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Lanjutkan Order", style=discord.ButtonStyle.primary, disabled=True)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.view.selected_merchant_code or not self.view.selected_product_name:
+            await interaction.response.send_message("❌ Mohon pilih merchant dan produk terlebih dahulu.", ephemeral=True)
+            return
+
+        modal = MarketplaceOrderModal(
+            bot=self.view.bot,
+            merchant_code=self.view.selected_merchant_code,
+            product_name=self.view.selected_product_name,
+            total_price=self.view.selected_product_price or 0,
+        )
+        await interaction.response.send_modal(modal)
+
+
+class MarketplaceOrderView(discord.ui.View):
+    def __init__(self, bot, merchants: dict):
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.merchants = merchants
+        self.selected_merchant_code = None
+        self.selected_product_name = None
+        self.selected_product_price = None
+        self.products = []
+
+        self.merchant_select = MerchantSelect(merchants)
+        self.add_item(self.merchant_select)
+        self.order_button = OrderButton()
+        self.add_item(self.order_button)
+
+    def remove_product_select(self):
+        items_to_remove = [item for item in self.children if isinstance(item, (ProductSelect, EmptyProductSelect))]
+        for item in items_to_remove:
+            self.remove_item(item)
+
+    def add_product_select(self, products):
+        prod_select = ProductSelect(products)
+        self.remove_item(self.order_button)
+        self.add_item(prod_select)
+        self.add_item(self.order_button)
+
+    def add_empty_product_select(self):
+        empty_select = EmptyProductSelect()
+        self.remove_item(self.order_button)
+        self.add_item(empty_select)
+        self.add_item(self.order_button)
+
+    def update_order_button_state(self):
+        if self.selected_merchant_code and self.selected_product_name:
+            self.order_button.disabled = False
+        else:
+            self.order_button.disabled = True
 
 
 def register_slash_commands(bot):
@@ -792,3 +1042,164 @@ def register_slash_commands(bot):
         embed = discord.Embed(title="✅ Leaderboard berhasil diupdate!", color=0x2ECC71)
         embed.add_field(name="Channel", value=channel.mention if channel else str(lb_cfg["channel_id"]), inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @bot.tree.command(name="merchantconfig", description="Tambah/update konfigurasi merchant (Admin only)")
+    @app_commands.describe(
+        merchant_code="Kode merchant (contoh: MELONZ)",
+        merchant_name="Nama merchant (contoh: Melon Store)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def merchant_config_slash(interaction: discord.Interaction, merchant_code: str, merchant_name: str):
+        code_clean = merchant_code.strip().upper()
+        name_clean = merchant_name.strip()
+        if not code_clean or not name_clean:
+            await interaction.response.send_message("❌ `merchant_code` dan `merchant_name` wajib diisi.", ephemeral=True)
+            return
+
+        data = set_merchant_config(code_clean, name_clean)
+        embed = discord.Embed(title="✅ Merchant Config Berhasil Disimpan", color=0x2ECC71)
+        embed.add_field(name="Merchant Code", value=data["merchant_code"], inline=True)
+        embed.add_field(name="Merchant Name", value=data["merchant_name"], inline=True)
+        embed.add_field(name="Total Produk", value=str(len(data.get("products", []))), inline=True)
+        embed.set_footer(text="Data disimpan di merchant_config.json")
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(name="addproduct", description="Tambah/update produk ke merchant (Admin only)")
+    @app_commands.describe(
+        merchant_code="Kode merchant (contoh: MELONZ)",
+        product_name="Nama produk",
+        price="Harga produk (IDR)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def add_product_slash(interaction: discord.Interaction, merchant_code: str, product_name: str, price: int):
+        if price <= 0:
+            await interaction.response.send_message("❌ Harga produk harus lebih dari 0.", ephemeral=True)
+            return
+
+        success, msg = add_merchant_product(merchant_code, product_name, price)
+        if not success:
+            await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
+            return
+
+        merchant_data = get_merchant(merchant_code) or {}
+        embed = discord.Embed(title="✅ Produk Berhasil Disimpan", description=msg, color=0x2ECC71)
+        embed.add_field(name="Merchant Code", value=merchant_code.strip().upper(), inline=True)
+        embed.add_field(name="Merchant Name", value=merchant_data.get("merchant_name", "-"), inline=True)
+        embed.add_field(name="Product Name", value=product_name.strip(), inline=True)
+        embed.add_field(name="Price", value=format_rupiah(price), inline=True)
+        embed.set_footer(text="Data diupdate ke merchant_config.json")
+        await interaction.response.send_message(embed=embed)
+
+    @add_product_slash.autocomplete("merchant_code")
+    async def merchant_code_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        codes = get_merchant_codes()
+        return [
+            app_commands.Choice(name=f"{code}", value=code)
+            for code in codes
+            if current.lower() in code.lower()
+        ][:25]
+
+    @bot.tree.command(name="deleteproduct", description="Hapus produk dari merchant (Admin only)")
+    @app_commands.describe(
+        merchant_code="Kode merchant (contoh: MELONZ)",
+        product_name="Nama produk yang ingin dihapus",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def delete_product_slash(interaction: discord.Interaction, merchant_code: str, product_name: str):
+        success, msg = delete_merchant_product(merchant_code, product_name)
+        if not success:
+            await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
+            return
+
+        merchant_data = get_merchant(merchant_code) or {}
+        embed = discord.Embed(title="🗑️ Produk Berhasil Dihapus", description=msg, color=0xE67E22)
+        embed.add_field(name="Merchant Code", value=merchant_code.strip().upper(), inline=True)
+        embed.add_field(name="Merchant Name", value=merchant_data.get("merchant_name", "-"), inline=True)
+        embed.add_field(name="Product Name", value=product_name.strip(), inline=True)
+        embed.set_footer(text="Data diupdate ke merchant_config.json")
+        await interaction.response.send_message(embed=embed)
+
+    @delete_product_slash.autocomplete("merchant_code")
+    async def delete_product_merchant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        codes = get_merchant_codes()
+        return [
+            app_commands.Choice(name=f"{code}", value=code)
+            for code in codes
+            if current.lower() in code.lower()
+        ][:25]
+
+    @delete_product_slash.autocomplete("product_name")
+    async def delete_product_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        merchant_code = getattr(interaction.namespace, "merchant_code", "") or ""
+        product_names = get_merchant_product_names(merchant_code)
+        return [
+            app_commands.Choice(name=p_name, value=p_name)
+            for p_name in product_names
+            if current.lower() in p_name.lower()
+        ][:25]
+
+    @bot.tree.command(name="ordermerchant", description="Pesan produk marketplace merchant via dialog pop-up")
+    async def order_merchant_slash(interaction: discord.Interaction):
+        merchants = load_merchant_config()
+        if not merchants:
+            await interaction.response.send_message(
+                "⚠️ Belum ada merchant yang terdaftar. Gunakan `/merchantconfig` terlebih dahulu.",
+                ephemeral=True,
+            )
+            return
+
+        view = MarketplaceOrderView(bot, merchants)
+        embed = discord.Embed(
+            title="🛒 Marketplace Order",
+            description="Pilih merchant dan produk yang ingin dibeli di bawah, lalu klik tombol **Lanjutkan Order** untuk mengisi nama customer.",
+            color=0x1A1F5E,
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @bot.tree.command(name="paymentmerchant", description="Upload bukti bayar order marketplace merchant")
+    @app_commands.describe(order_number="Nomor order (contoh: MPO-MELONZ-FMJ1WN)", image="Attachment screenshot bukti bayar")
+    async def payment_merchant_slash(interaction: discord.Interaction, order_number: str, image: discord.Attachment):
+        order_number = (order_number or "").strip()
+        if not order_number:
+            await interaction.response.send_message("❌ Order number wajib diisi.", ephemeral=True)
+            return
+
+        content_type = image.content_type or ""
+        lower_name = (image.filename or "").lower()
+        if not content_type.startswith("image/") and not lower_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            await interaction.response.send_message("❌ Attachment harus berupa gambar bukti pembayaran.", ephemeral=True)
+            return
+
+        image_url = image.url
+        await interaction.response.defer(thinking=True)
+        try:
+            upload_response = await upload_marketplace_payment_proof(bot.http_session, order_number, image_url)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal upload payment proof: {e}")
+            return
+
+        if not upload_response or not upload_response.get("success"):
+            error_message = upload_response["message"] if upload_response and upload_response.get("message") else "Gagal upload payment proof."
+            await interaction.followup.send(f"❌ {error_message}")
+            return
+
+        upload_data = upload_response.get("data") or {}
+        embed = discord.Embed(
+            title="✅ Payment Merchant Berhasil Diupload",
+            description=upload_response.get("message", "Payment uploaded successfully."),
+            color=0x2ECC71,
+        )
+        embed.add_field(name="Order Number", value=upload_data.get("order_number", order_number), inline=True)
+        embed.add_field(name="Status", value=upload_data.get("status", "done"), inline=True)
+        embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.context_menu(name="Upload Payment Merchant")
+    async def payment_merchant_context_menu(interaction: discord.Interaction, message: discord.Message):
+        if not get_message_image_url(message):
+            await interaction.response.send_message(
+                "❌ Message yang dipilih tidak punya gambar bukti pembayaran.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(PaymentMerchantContextModal(bot, message))

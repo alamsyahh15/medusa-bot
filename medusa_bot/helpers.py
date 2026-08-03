@@ -22,6 +22,8 @@ from .config import (
     ENABLE_MEMBERS_INTENT,
     HTTP_TIMEOUT_SECONDS,
     LEADERBOARD_API,
+    MARKETPLACE_ORDER_API,
+    MARKETPLACE_UPLOAD_PAYMENT_API,
     ROBLOX_API_KEY,
     ROBLOX_EXTERNAL_ORDER_API,
     ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API,
@@ -547,6 +549,84 @@ async def upload_payment_proof(session: aiohttp.ClientSession, order_number: str
     log_debug("upload_payment_proof.request", order_number=order_number, url=ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API, image_url=image_url)
     async with session.post(ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API, headers=headers, json=payload) as resp:
         log_debug("upload_payment_proof.response", order_number=order_number, status=resp.status)
+        try:
+            data = await resp.json()
+        except Exception:
+            text = await resp.text()
+            return {
+                "success": False,
+                "message": f"HTTP {resp.status}: {text[:300]}",
+            }
+
+    if resp.status >= 400:
+        data.setdefault("success", False)
+        data.setdefault("message", f"HTTP {resp.status}")
+    return data
+
+
+async def place_marketplace_order(
+    session: aiohttp.ClientSession,
+    merchant_code: str,
+    customer_name: str,
+    product_name: str,
+    total_price: int,
+) -> Optional[dict]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "merchant_code": merchant_code,
+        "customer_name": customer_name,
+        "product_name": product_name,
+        "total_price": total_price,
+    }
+    log_debug(
+        "place_marketplace_order.request",
+        merchant_code=merchant_code,
+        customer_name=customer_name,
+        product_name=product_name,
+        total_price=total_price,
+        url=MARKETPLACE_ORDER_API,
+    )
+    async with session.post(MARKETPLACE_ORDER_API, headers=headers, json=payload) as resp:
+        log_debug("place_marketplace_order.response", merchant_code=merchant_code, status=resp.status)
+        try:
+            data = await resp.json()
+        except Exception:
+            text = await resp.text()
+            return {
+                "success": False,
+                "message": f"HTTP {resp.status}: {text[:300]}",
+            }
+
+    if resp.status >= 400:
+        data.setdefault("success", False)
+        data.setdefault("message", f"HTTP {resp.status}")
+    return data
+
+
+async def upload_marketplace_payment_proof(
+    session: aiohttp.ClientSession,
+    order_number: str,
+    image_url: str,
+) -> Optional[dict]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "order_number": order_number,
+        "image_url": image_url,
+    }
+    log_debug(
+        "upload_marketplace_payment_proof.request",
+        order_number=order_number,
+        url=MARKETPLACE_UPLOAD_PAYMENT_API,
+        image_url=image_url,
+    )
+    async with session.post(MARKETPLACE_UPLOAD_PAYMENT_API, headers=headers, json=payload) as resp:
+        log_debug("upload_marketplace_payment_proof.response", order_number=order_number, status=resp.status)
         try:
             data = await resp.json()
         except Exception:
