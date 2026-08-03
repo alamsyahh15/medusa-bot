@@ -309,3 +309,19 @@ def get_merchant_product_names(merchant_code: str) -> list[str]:
     return [p.get("product_name", "") for p in merchant.get("products", []) if p.get("product_name")]
 
 
+def get_all_product_names() -> list[str]:
+    config = load_merchant_config()
+    all_names = []
+    for merchant in config.values():
+        m_name = merchant.get("merchant_name")
+        if m_name and m_name not in all_names:
+            all_names.append(m_name)
+        for p in merchant.get("products", []):
+            name = p.get("product_name")
+            if name and name not in all_names:
+                all_names.append(name)
+    return all_names
+
+
+
+
