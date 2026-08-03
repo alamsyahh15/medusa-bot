@@ -14,6 +14,7 @@ from .config import (
     delete_leaderboard_config,
     delete_merchant_product,
     delete_rating_log_config,
+    get_all_product_names,
     get_guild_config,
     get_leaderboard_config,
     get_merchant,
@@ -172,6 +173,131 @@ class PaymentMerchantContextModal(discord.ui.Modal, title="Upload Payment Mercha
         embed.add_field(name="Status", value=upload_data.get("status", "done"), inline=True)
         embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
         await interaction.followup.send(embed=embed)
+
+
+class SendKeyModal(discord.ui.Modal, title="Form Send Key"):
+    def __init__(self, bot, target_user: discord.User, product_name: str, merchant_name: str):
+        super().__init__()
+        self.bot = bot
+        self.target_user = target_user
+        self.product_name = product_name
+        self.merchant_name = merchant_name
+
+        display_product = product_name if product_name else merchant_name
+        self.key_input = discord.ui.TextInput(
+            label="License Key",
+            placeholder="Masukkan license key",
+            required=True,
+            max_length=256,
+        )
+        self.how_to_input = discord.ui.TextInput(
+            label="How to Use (Opsional)",
+            placeholder=f"Default: Copy key di atas, terus masukin ke {display_product} script loader.",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+        )
+        self.add_item(self.key_input)
+        self.add_item(self.how_to_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        key_val = (self.key_input.value or "").strip()
+        how_to_val = (self.how_to_input.value or "").strip()
+
+        if not key_val:
+            await interaction.followup.send("❌ License key wajib diisi.", ephemeral=True)
+            return
+
+        display_merchant = self.merchant_name if self.merchant_name else self.product_name
+        display_product = self.product_name if self.product_name else self.merchant_name
+
+        if display_merchant and display_product and display_merchant != display_product:
+            desc_text = f"Kamu dapet key baru dari **{display_merchant}**,\ntipe **{display_product}**:"
+        else:
+            desc_text = f"Kamu dapet key baru dari **{display_product}**:"
+
+        how_to_clean = (
+            how_to_val
+            if how_to_val
+            else f"Copy key di atas, terus masukin ke {display_merchant} script loader."
+        )
+
+        embed = discord.Embed(
+            title="🔑 Key Baru Untuk Kamu!",
+            description=desc_text,
+            color=0x8A2BE2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="🔑 Your Key",
+            value=f"```\n{key_val}\n```",
+            inline=False,
+        )
+        embed.add_field(
+            name="⌛ Valid For",
+            value=display_product,
+            inline=False,
+        )
+        embed.add_field(
+            name="📖 How to Use",
+            value=how_to_clean,
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Important",
+            value="Jangan share key ini ke siapapun!",
+            inline=False,
+        )
+        embed.set_footer(text=f"{display_merchant} • Key System")
+
+        try:
+            await self.target_user.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"❌ Gagal mengirim DM ke {self.target_user.mention} (`{self.target_user.name}`). User mematikan pesan DM dari anggota server.",
+                ephemeral=True,
+            )
+            return
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Gagal mengirim DM ke {self.target_user.mention}: {e}",
+                ephemeral=True,
+            )
+            return
+
+        confirm_embed = discord.Embed(
+            title="✅ Key Berhasil Dikirim!",
+            description=f"Key telah berhasil dikirimkan via Direct Message (DM) ke {self.target_user.mention} (`{self.target_user.name}`).",
+            color=0x2ECC71,
+        )
+        confirm_embed.add_field(name="Target User", value=f"{self.target_user.mention} (`{self.target_user.id}`)", inline=True)
+        confirm_embed.add_field(name="Product", value=display_product, inline=True)
+        confirm_embed.add_field(name="Key", value=f"`{key_val}`", inline=False)
+        if how_to_val:
+            confirm_embed.add_field(name="How to Use (Custom)", value=how_to_val, inline=False)
+
+        await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+
+
+class SendKeyUserSelectView(discord.ui.View):
+    def __init__(self, bot, product_name: str, merchant_name: str):
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.product_name = product_name
+        self.merchant_name = merchant_name
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="Pilih user target untuk menerima key...",
+        min_values=1,
+        max_values=1,
+    )
+    async def select_user(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        target_user = select.values[0]
+        await interaction.response.send_modal(
+            SendKeyModal(self.bot, target_user, self.product_name, self.merchant_name)
+        )
 
 
 class MarketplaceOrderModal(discord.ui.Modal, title="Form Order Merchant"):
@@ -1235,3 +1361,143 @@ def register_slash_commands(bot):
             )
             return
         await interaction.response.send_modal(PaymentMerchantContextModal(bot, message))
+
+    @bot.tree.command(name="sendkey", description="Kirimkan license key produk via Direct Message (DM) ke user")
+    @app_commands.describe(
+        user="Pilih user/member target yang akan dikirimi DM",
+        product="Pilih atau masukkan nama produk (contoh: Pandu Hub)",
+        key="Masukkan license key",
+        how_to="Instruksi cara penggunaan (Opsional)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def send_key_slash(
+        interaction: discord.Interaction,
+        user: discord.User,
+        product: str,
+        key: str,
+        how_to: Optional[str] = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        product_clean = product.strip()
+        key_clean = key.strip()
+        how_to_clean = how_to.strip() if how_to and how_to.strip() else f"Copy key di atas, terus masukin ke {product_clean} script loader."
+
+        embed = discord.Embed(
+            title="🔑 Key Baru Untuk Kamu!",
+            description=f"Kamu dapet key baru dari **{product_clean}**:",
+            color=0x8A2BE2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="🔑 Your Key",
+            value=f"```\n{key_clean}\n```",
+            inline=False,
+        )
+        embed.add_field(
+            name="⌛ Valid For",
+            value=product_clean,
+            inline=False,
+        )
+        embed.add_field(
+            name="📖 How to Use",
+            value=how_to_clean,
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Important",
+            value="Jangan share key ini ke siapapun!",
+            inline=False,
+        )
+        embed.set_footer(text=f"{product_clean} • Key System")
+
+        try:
+            await user.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"❌ Gagal mengirim DM ke {user.mention} (`{user.name}`). User mematikan pesan DM dari anggota server.",
+                ephemeral=True,
+            )
+            return
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Gagal mengirim DM ke {user.mention}: {e}",
+                ephemeral=True,
+            )
+            return
+
+        confirm_embed = discord.Embed(
+            title="✅ Key Berhasil Dikirim!",
+            description=f"Key telah berhasil dikirimkan via Direct Message (DM) ke {user.mention} (`{user.name}`).",
+            color=0x2ECC71,
+        )
+        confirm_embed.add_field(name="Target User", value=f"{user.mention} (`{user.id}`)", inline=True)
+        confirm_embed.add_field(name="Product", value=product_clean, inline=True)
+        confirm_embed.add_field(name="Key", value=f"`{key_clean}`", inline=False)
+        if how_to and how_to.strip():
+            confirm_embed.add_field(name="How to Use (Custom)", value=how_to.strip(), inline=False)
+
+        await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+
+    @send_key_slash.autocomplete("product")
+    async def send_key_product_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        product_names = get_all_product_names()
+        return [
+            app_commands.Choice(name=p_name, value=p_name)
+            for p_name in product_names
+            if current.lower() in p_name.lower()
+        ][:25]
+
+    @bot.tree.context_menu(name="Send Key")
+    async def send_key_context_menu(interaction: discord.Interaction, message: discord.Message):
+        if not message.embeds:
+            await interaction.response.send_message(
+                "❌ Message yang dipilih tidak memiliki embed 'Marketplace Order Berhasil!'.",
+                ephemeral=True,
+            )
+            return
+
+        embed = message.embeds[0]
+        merchant_code = ""
+        product_name = ""
+        customer_name = ""
+
+        for field in embed.fields:
+            if field.name == "Merchant Code":
+                merchant_code = (field.value or "").strip()
+            elif field.name == "Product Name":
+                product_name = (field.value or "").strip()
+            elif field.name == "Customer Name":
+                customer_name = (field.value or "").strip()
+
+        if not product_name and not merchant_code:
+            await interaction.response.send_message(
+                "❌ Gagal membaca produk/merchant dari embed pesan ini. Pastikan pesan merupakan embed 'Marketplace Order Berhasil!'.",
+                ephemeral=True,
+            )
+            return
+
+        merchant_data = get_merchant(merchant_code) if merchant_code else None
+        merchant_name = merchant_data.get("merchant_name") if merchant_data else merchant_code
+
+        display_prod = product_name if product_name else merchant_name
+        display_merch = merchant_name if merchant_name else merchant_code
+
+        view = SendKeyUserSelectView(bot, product_name=display_prod, merchant_name=display_merch)
+
+        info_embed = discord.Embed(
+            title="🔑 Send Key dari Order",
+            description=(
+                f"Berhasil membaca data order:\n"
+                f"• **Produk**: `{display_prod}`\n"
+                f"• **Merchant**: `{display_merch}`\n"
+                f"• **Customer**: `{customer_name or '-'}`\n\n"
+                f"Silakan pilih **User Target** di bawah ini untuk mengisi Key."
+            ),
+            color=0x8A2BE2,
+        )
+        await interaction.response.send_message(embed=info_embed, view=view, ephemeral=True)
+
+
