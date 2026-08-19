@@ -38,10 +38,10 @@ FORCE_SLASH_SYNC = os.getenv("FORCE_SLASH_SYNC", "0") == "1"
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
 ENABLE_MEMBERS_INTENT = os.getenv("ENABLE_MEMBERS_INTENT", "0") == "1"
 CALC_RATES = {
-    "group": 138000,
-    "gamepass": 128000,
+    "group": 145000,
+    "gamepass": 132000,
     "gig": 115000,
-    "send": 143000,
+    "send": 150000,
 }
 CALC_MIN_ROBUX = 125
 CALC_TYPE_ORDER = ["group", "gamepass", "gig", "send"]
