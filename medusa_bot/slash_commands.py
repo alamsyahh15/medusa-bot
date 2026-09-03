@@ -38,6 +38,7 @@ from .helpers import (
     ensure_order_interaction_access,
     extract_ticket_identity,
     fetch_and_render_leaderboard,
+    fetch_user_commission,
     find_member_in_guild,
     format_datetime_gmt7,
     format_rupiah,
@@ -651,6 +652,7 @@ def register_slash_commands(bot):
         embed.add_field(name="/qris", value="Generate QRIS. Contoh: `/qris amount:26000`", inline=False)
         embed.add_field(name="/calc", value="Kalkulasi Robux/IDR untuk semua metode sekaligus. Contoh: `/calc value:500`, `/calc value:15k`, atau `/calc value:100rb`", inline=False)
         embed.add_field(name="/check", value="Cek apakah user Roblox sudah 3 hari di group. Contoh: `/check username_roblox`", inline=False)
+        embed.add_field(name="/commision", value="Cek rincian komisi user Roblox. Contoh: `/commision username_roblox`", inline=False)
         embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway.", inline=False)
         embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
         embed.add_field(name="Apps > Upload Payment", value="Klik kanan message bukti bayar lalu isi `order_number` di popup modal.", inline=False)
@@ -758,6 +760,53 @@ def register_slash_commands(bot):
             for index, group_id in enumerate(missing_group_ids, start=1):
                 view.add_item(discord.ui.Button(label=f"Join Group {index}", url=build_roblox_group_share_url(group_id)))
         await send_interaction_message(interaction, embed=embed, view=view)
+
+    async def _handle_commission(interaction: discord.Interaction, username_roblox: str):
+        username_clean = sanitize_roblox_username(username_roblox) or username_roblox.strip()
+        log_debug(
+            "commission.slash_invoked",
+            author=getattr(interaction.user, "id", None),
+            guild=getattr(interaction.guild, "id", None),
+            username=username_clean,
+        )
+        if not username_clean:
+            await interaction.response.send_message("❌ Username Roblox wajib diisi.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True)
+        resp = await fetch_user_commission(bot.http_session, username_clean)
+
+        if not resp or not isinstance(resp, dict) or not resp.get("success") or not resp.get("data"):
+            msg = resp.get("message") if resp and isinstance(resp, dict) and resp.get("message") else "Data komisi tidak ditemukan."
+            await interaction.followup.send(f"❌ Gagal mengambil data komisi: {msg}")
+            return
+
+        data = resp["data"]
+        username = data.get("username") or username_clean
+        user_id = data.get("user_id")
+        commission = data.get("commission", 0) or 0
+
+        embed = discord.Embed(
+            title="💰 Detail Komisi Roblox",
+            description=f"Rincian komisi untuk user **{username}**",
+            color=0x2ECC71,
+        )
+        embed.add_field(name="Username", value=f"`{username}`", inline=True)
+        embed.add_field(name="User ID", value=str(user_id) if user_id is not None else "-", inline=True)
+        embed.add_field(name="Commission", value=f"**{format_rupiah(int(commission))}**", inline=False)
+        embed.set_footer(text="MedusaBlox Commission System")
+
+        await send_interaction_message(interaction, embed=embed)
+
+    @bot.tree.command(name="commission", description="Cek rincian komisi user Roblox")
+    @app_commands.describe(username_roblox="Username Roblox yang mau dicek komisinya")
+    async def commission_slash(interaction: discord.Interaction, username_roblox: str):
+        await _handle_commission(interaction, username_roblox)
+
+    @bot.tree.command(name="commision", description="Cek rincian komisi user Roblox (alias)")
+    @app_commands.describe(username_roblox="Username Roblox yang mau dicek komisinya")
+    async def commision_slash(interaction: discord.Interaction, username_roblox: str):
+        await _handle_commission(interaction, username_roblox)
 
     @bot.tree.command(name="leaderboard", description="Tampilkan leaderboard Top 3")
     async def leaderboard_slash(interaction: discord.Interaction):

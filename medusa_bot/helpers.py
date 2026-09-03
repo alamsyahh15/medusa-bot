@@ -19,6 +19,7 @@ from .config import (
     CALC_TYPE_ICONS,
     CALC_TYPE_LABELS,
     CALC_TYPE_ORDER,
+    COMMISSION_API,
     ENABLE_MEMBERS_INTENT,
     HTTP_TIMEOUT_SECONDS,
     LEADERBOARD_API,
@@ -813,3 +814,20 @@ def resolve_text_channel(channel: app_commands.AppCommandChannel):
     if isinstance(resolved, discord.TextChannel):
         return resolved
     return None
+
+
+async def fetch_user_commission(session: aiohttp.ClientSession, username_roblox: str) -> Optional[dict]:
+    url = f"{COMMISSION_API.rstrip('/')}/{username_roblox}"
+    try:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            try:
+                data = await resp.json()
+                return data
+            except Exception:
+                return {"success": False, "message": f"HTTP {resp.status}"}
+    except Exception as e:
+        log_debug("fetch_user_commission.error", error=str(e), username=username_roblox)
+        return {"success": False, "message": f"Gagal menghubungi server komisi: {e}"}
+

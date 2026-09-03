@@ -7,6 +7,10 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 CONFIG_FILE = "config.json"
 ADMIN_FEE_RATE = 0.005
 LEADERBOARD_API = "https://medusablox.com/api/roblox/external/leaderboard"
+COMMISSION_API = os.getenv(
+    "COMMISSION_API",
+    "https://medusablox.com/api/v1/external/commission",
+)
 ROBLOX_GROUP_IDS = os.getenv("ROBLOX_GROUP_IDS", "")
 ROBLOX_API_KEY = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_USER_LOOKUP_API = "https://users.roblox.com/v1/usernames/users"
