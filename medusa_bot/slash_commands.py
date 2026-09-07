@@ -785,6 +785,12 @@ def register_slash_commands(bot):
         username = data.get("username") or username_clean
         user_id = data.get("user_id")
         commission = data.get("commission", 0) or 0
+        total_point = data.get("total_point") if data.get("total_point") is not None else data.get("total_points") if data.get("total_points") is not None else data.get("points") if data.get("points") is not None else data.get("point") or 0
+
+        try:
+            total_point_fmt = f"{int(total_point):,}".replace(",", ".")
+        except (ValueError, TypeError):
+            total_point_fmt = str(total_point)
 
         embed = discord.Embed(
             title="💰 Detail Komisi Roblox",
@@ -794,6 +800,7 @@ def register_slash_commands(bot):
         embed.add_field(name="Username", value=f"`{username}`", inline=True)
         embed.add_field(name="User ID", value=str(user_id) if user_id is not None else "-", inline=True)
         embed.add_field(name="Commission", value=f"**{format_rupiah(int(commission))}**", inline=False)
+        embed.add_field(name="Total Point", value=f"**{total_point_fmt}**", inline=False)
         embed.set_footer(text="MedusaBlox Commission System")
 
         await send_interaction_message(interaction, embed=embed)
