@@ -1,3 +1,5 @@
+import asyncio
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -41,12 +43,17 @@ from .helpers import (
     fetch_user_commission,
     find_member_in_guild,
     format_datetime_gmt7,
+    format_remaining_time,
+    format_roblox_join_date,
     format_rupiah,
     generate_qris_image,
     get_configured_roblox_group_ids,
+    get_configured_roblox_groups,
     get_group_membership,
     get_message_image_url,
     get_order_roles,
+    get_roblox_group_names,
+    get_roblox_user_avatar_url,
     log_debug,
     lookup_roblox_user,
     make_dynamic_qris,
@@ -516,11 +523,72 @@ class MarketplaceOrderView(discord.ui.View):
         self.add_item(empty_select)
         self.add_item(self.order_button)
 
-    def update_order_button_state(self):
-        if self.selected_merchant_code and self.selected_product_name:
-            self.order_button.disabled = False
-        else:
-            self.order_button.disabled = True
+class CheckPaginationView(discord.ui.View):
+    def __init__(
+        self,
+        author_id: int,
+        title_text: str,
+        author_text: str,
+        avatar_url: Optional[str],
+        items: list,
+        eligible_count: int,
+        page_size: int = 15
+    ):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.title_text = title_text
+        self.author_text = author_text
+        self.avatar_url = avatar_url
+        self.items = items
+        self.eligible_count = eligible_count
+        self.total_count = len(items)
+        self.page_size = page_size
+        self.current_page = 0
+        self.total_pages = math.ceil(self.total_count / page_size) if self.total_count > 0 else 1
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.prev_button.disabled = (self.current_page <= 0)
+        self.next_button.disabled = (self.current_page >= self.total_pages - 1)
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=self.title_text,
+            color=0x2B2D31
+        )
+        embed.set_author(name=self.author_text)
+        if self.avatar_url:
+            embed.set_thumbnail(url=self.avatar_url)
+
+        start_idx = self.current_page * self.page_size
+        end_idx = start_idx + self.page_size
+        page_items = self.items[start_idx:end_idx]
+
+        lines = [item["formatted_line"] for item in page_items]
+        embed.description = "\n".join(lines) if lines else "Tidak ada group."
+
+        embed.set_footer(text=f"{self.eligible_count}/{self.total_count} eligible • page {self.current_page + 1} of {self.total_pages}")
+        return embed
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, custom_id="check_prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Tombol ini hanya bisa digunakan oleh pemanggil command.", ephemeral=True)
+            return
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, custom_id="check_next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Tombol ini hanya bisa digunakan oleh pemanggil command.", ephemeral=True)
+            return
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
 def register_slash_commands(bot):
@@ -677,8 +745,8 @@ def register_slash_commands(bot):
             await interaction.response.send_message("❌ Username Roblox wajib diisi.", ephemeral=True)
             return
 
-        group_ids = get_configured_roblox_group_ids()
-        if not group_ids or not ROBLOX_API_KEY:
+        group_configs = get_configured_roblox_groups()
+        if not group_configs or not ROBLOX_API_KEY:
             await interaction.response.send_message("❌ `ROBLOX_GROUP_IDS` atau `ROBLOX_API_KEY` belum diset di environment bot.", ephemeral=True)
             return
 
@@ -689,77 +757,81 @@ def register_slash_commands(bot):
                 await interaction.followup.send(f"❌ Username Roblox `{username_roblox}` tidak ditemukan atau terkena filter banned user.")
                 return
 
+            group_ids = [g["group_id"] for g in group_configs]
+            group_names = await get_roblox_group_names(bot.http_session, group_ids)
+            avatar_url = await get_roblox_user_avatar_url(bot.http_session, user_data["id"])
+
             now_utc = datetime.now(timezone.utc)
-            group_results = []
-            for group_id in group_ids:
-                membership = await get_group_membership(bot.http_session, group_id, user_data["id"])
+            semaphore = asyncio.Semaphore(10)
+
+            async def process_group(config):
+                group_id = config["group_id"]
+                min_days = config["min_days"]
+                group_name = group_names.get(group_id, f"Group {group_id}")
+                group_url = build_roblox_group_share_url(group_id)
+
+                async with semaphore:
+                    try:
+                        membership = await get_group_membership(bot.http_session, group_id, user_data["id"])
+                    except Exception:
+                        return {
+                            "group_id": group_id,
+                            "is_ready": False,
+                            "formatted_line": f"❕ [**{group_name}**]({group_url}) (this group hides its member list from every configured key)"
+                        }
+
                 if not membership:
-                    group_results.append({"group_id": group_id, "membership_found": False})
-                    continue
+                    return {
+                        "group_id": group_id,
+                        "is_ready": False,
+                        "formatted_line": f"🟥 [**{group_name}**]({group_url}) (join first)"
+                    }
 
                 create_time_raw = membership.get("createTime")
                 if not create_time_raw:
-                    await interaction.followup.send(f"❌ Data `createTime` membership tidak ditemukan untuk group `{group_id}`.")
-                    return
+                    return {
+                        "group_id": group_id,
+                        "is_ready": False,
+                        "formatted_line": f"❕ [**{group_name}**]({group_url}) (data createTime tidak ditemukan)"
+                    }
 
                 create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
-                available_at = create_time + timedelta(days=3)
-                group_results.append({
+                available_at = create_time + timedelta(days=min_days)
+                is_ready = now_utc >= available_at
+
+                if is_ready:
+                    line = f"🍃 [**{group_name}**]({group_url}) (joined {format_roblox_join_date(create_time)})"
+                else:
+                    rem_str = format_remaining_time(available_at, now_utc)
+                    line = f"❕ [**{group_name}**]({group_url}) ({rem_str})"
+
+                return {
                     "group_id": group_id,
-                    "membership_found": True,
-                    "create_time": create_time,
-                    "available_at": available_at,
-                    "is_ready": now_utc >= available_at,
-                })
+                    "is_ready": is_ready,
+                    "formatted_line": line
+                }
+
+            group_items = list(await asyncio.gather(*(process_group(cfg) for cfg in group_configs)))
+            eligible_count = sum(1 for item in group_items if item["is_ready"])
+
+            store_title = f"{interaction.guild.name} groups" if interaction.guild else "Roblox groups"
+            author_text = f"{user_data.get('displayName', user_data['name'])} (@{user_data['name']})"
+
+            view = CheckPaginationView(
+                author_id=interaction.user.id,
+                title_text=store_title,
+                author_text=author_text,
+                avatar_url=avatar_url,
+                items=group_items,
+                eligible_count=eligible_count,
+                page_size=15
+            )
+            initial_embed = view.build_embed()
+            await send_interaction_message(interaction, embed=initial_embed, view=view)
+
         except Exception as e:
             await interaction.followup.send(f"❌ Gagal cek membership Roblox: {e}")
             return
-
-        embed = discord.Embed(title="🔎 Hasil Cek Membership Roblox", description="User bisa order instant group jika minimal ada satu group yang sudah diikuti selama 3 hari.", color=0x1A1F5E)
-        embed.add_field(name="Username", value=user_data["name"], inline=True)
-        embed.add_field(name="Display Name", value=user_data.get("displayName", "-"), inline=True)
-        embed.add_field(name="User ID", value=str(user_data["id"]), inline=True)
-
-        group_lines = []
-        has_ready_group = False
-        earliest_available_at = None
-        missing_group_ids = []
-        for index, result in enumerate(group_results, start=1):
-            group_id = result["group_id"]
-            if not result["membership_found"]:
-                missing_group_ids.append(group_id)
-                group_lines.append(f"**Group {index}** (`{group_id}`)\nBelum join group ini.")
-                continue
-            create_time = result["create_time"]
-            available_at = result["available_at"]
-            if earliest_available_at is None or available_at < earliest_available_at:
-                earliest_available_at = available_at
-            if result["is_ready"]:
-                has_ready_group = True
-                group_lines.append(f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nStatus: siap dipakai untuk order.")
-            else:
-                group_lines.append(f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nBisa dipakai untuk order mulai {format_datetime_gmt7(available_at)}.")
-
-        if has_ready_group and group_results:
-            embed.add_field(name="Status", value="✅ User ini sudah eligible untuk order robux instant group karena minimal ada satu group yang sudah 3 hari.", inline=False)
-            embed.color = 0x2ECC71
-        else:
-            status_value = "⏳ User ini belum eligible untuk order instant group."
-            if earliest_available_at:
-                status_value += f"\nEstimasi paling cepat bisa order: **{format_datetime_gmt7(earliest_available_at)}**."
-            if missing_group_ids:
-                status_value += "\nMasih ada group yang belum di-join, tapi cukup salah satu group yang siap 3 hari."
-            embed.add_field(name="Status", value=status_value, inline=False)
-            embed.color = 0xF1C40F
-
-        embed.add_field(name="Detail Group", value="\n\n".join(group_lines), inline=False)
-
-        view = None
-        if missing_group_ids:
-            view = discord.ui.View()
-            for index, group_id in enumerate(missing_group_ids, start=1):
-                view.add_item(discord.ui.Button(label=f"Join Group {index}", url=build_roblox_group_share_url(group_id)))
-        await send_interaction_message(interaction, embed=embed, view=view)
 
     async def _handle_commission(interaction: discord.Interaction, username_roblox: str):
         username_clean = sanitize_roblox_username(username_roblox) or username_roblox.strip()

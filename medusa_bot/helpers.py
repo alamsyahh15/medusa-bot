@@ -73,13 +73,112 @@ def format_rupiah(amount: int) -> str:
     return "Rp {:,.0f}".format(amount).replace(",", ".")
 
 
-def get_configured_roblox_group_ids():
-    group_ids = []
-    for group_id in ROBLOX_GROUP_IDS.split(","):
-        cleaned = group_id.strip()
-        if cleaned and cleaned not in group_ids:
-            group_ids.append(cleaned)
-    return group_ids
+def get_configured_roblox_groups() -> list:
+    """
+    Parses ROBLOX_GROUP_IDS which can contain group_id or group_id:min_days.
+    Example: "35619375:3,12345678:14,999999"
+    Returns a list of dicts: [{"group_id": "35619375", "min_days": 3}, ...]
+    """
+    groups = []
+    seen = set()
+    for item in ROBLOX_GROUP_IDS.split(","):
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        if ":" in cleaned:
+            parts = cleaned.split(":", 1)
+            group_id = parts[0].strip()
+            try:
+                min_days = int(parts[1].strip())
+            except ValueError:
+                min_days = 3
+        else:
+            group_id = cleaned
+            min_days = 3
+
+        if group_id and group_id not in seen:
+            seen.add(group_id)
+            groups.append({
+                "group_id": group_id,
+                "min_days": min_days,
+            })
+    return groups
+
+
+def get_configured_roblox_group_ids() -> list:
+    return [g["group_id"] for g in get_configured_roblox_groups()]
+
+
+async def get_roblox_user_avatar_url(session: aiohttp.ClientSession, user_id: int) -> Optional[str]:
+    url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
+    try:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                items = data.get("data") or []
+                if items and items[0].get("state") == "Completed":
+                    return items[0].get("imageUrl")
+    except Exception as e:
+        log_debug("get_roblox_user_avatar_url.error", user_id=user_id, error=str(e))
+    return None
+
+
+async def get_roblox_group_names(session: aiohttp.ClientSession, group_ids: list) -> dict:
+    group_names = {}
+    if not group_ids:
+        return group_names
+
+    chunk_size = 50
+    for i in range(0, len(group_ids), chunk_size):
+        chunk = group_ids[i:i + chunk_size]
+        url = f"https://groups.roblox.com/v1/groups?groupIds={','.join(chunk)}"
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    for item in data.get("data") or []:
+                        g_id = str(item.get("id"))
+                        g_name = item.get("name")
+                        if g_id and g_name:
+                            group_names[g_id] = g_name
+        except Exception as e:
+            log_debug("get_roblox_group_names.error", chunk=chunk, error=str(e))
+
+    return group_names
+
+
+MONTH_NAMES_ID = [
+    "", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+]
+
+
+def format_roblox_join_date(dt_utc: datetime) -> str:
+    dt_gmt7 = dt_utc.astimezone(timezone(timedelta(hours=7)))
+    month_str = MONTH_NAMES_ID[dt_gmt7.month]
+    return f"{dt_gmt7.day} {month_str} {dt_gmt7.year}"
+
+
+def format_remaining_time(available_at: datetime, now_utc: datetime) -> str:
+    diff = available_at - now_utc
+    if diff.total_seconds() <= 0:
+        return "eligible now"
+
+    total_seconds = int(diff.total_seconds())
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+
+    if days > 0:
+        if hours > 0:
+            return f"eligible in {days} days {hours} hours"
+        return f"eligible in {days} days"
+    elif hours > 0:
+        return f"eligible in {hours} hours"
+    elif minutes > 0:
+        return f"eligible in {minutes} minutes"
+    else:
+        return f"eligible in less than a minute"
 
 
 def build_roblox_group_share_url(group_id: str) -> str:
