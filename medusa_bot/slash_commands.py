@@ -49,6 +49,7 @@ from .helpers import (
     generate_qris_image,
     get_configured_roblox_group_ids,
     get_configured_roblox_groups,
+    get_configured_reseller_groups,
     get_group_membership,
     get_message_image_url,
     get_order_roles,
@@ -720,6 +721,7 @@ def register_slash_commands(bot):
         embed.add_field(name="/qris", value="Generate QRIS. Contoh: `/qris amount:26000`", inline=False)
         embed.add_field(name="/calc", value="Kalkulasi Robux/IDR untuk semua metode sekaligus. Contoh: `/calc value:500`, `/calc value:15k`, atau `/calc value:100rb`", inline=False)
         embed.add_field(name="/check", value="Cek apakah user Roblox sudah 3 hari di group. Contoh: `/check username_roblox`", inline=False)
+        embed.add_field(name="/check-reseller", value="Cek apakah user Roblox sudah eligible di group reseller. Contoh: `/check-reseller username_roblox`", inline=False)
         embed.add_field(name="/commision", value="Cek rincian komisi user Roblox. Contoh: `/commision username_roblox`", inline=False)
         embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway.", inline=False)
         embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
@@ -736,18 +738,22 @@ def register_slash_commands(bot):
         embed.add_field(name="Privacy Policy", value="[Klik di sini](https://alamsyahh15.github.io/medusa-bot/privacy.html)", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="check", description="Cek apakah user Roblox sudah eligible order instant group")
-    @app_commands.describe(username_roblox="Username Roblox yang mau dicek")
-    async def check_slash(interaction: discord.Interaction, username_roblox: str):
+    async def _handle_check_groups(interaction: discord.Interaction, username_roblox: str, config_type: str = "community"):
         username_roblox = sanitize_roblox_username(username_roblox) or username_roblox.strip()
-        log_debug("check.slash_invoked", author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None), username=username_roblox)
+        log_debug("check.slash_invoked", config_type=config_type, author=getattr(interaction.user, "id", None), guild=getattr(interaction.guild, "id", None), username=username_roblox)
         if not username_roblox:
             await interaction.response.send_message("❌ Username Roblox wajib diisi.", ephemeral=True)
             return
 
-        group_configs = get_configured_roblox_groups()
+        if config_type == "reseller":
+            group_configs = get_configured_reseller_groups()
+            config_err_msg = "❌ File `reseller_groups.json` atau `RESELLER_GROUP_IDS` belum diset di environment bot."
+        else:
+            group_configs = get_configured_roblox_groups()
+            config_err_msg = "❌ `ROBLOX_GROUP_IDS` atau `community_groups.json` belum diset di environment bot."
+
         if not group_configs or not ROBLOX_API_KEY:
-            await interaction.response.send_message("❌ `ROBLOX_GROUP_IDS` atau `ROBLOX_API_KEY` belum diset di environment bot.", ephemeral=True)
+            await interaction.response.send_message(config_err_msg, ephemeral=True)
             return
 
         await interaction.response.defer(thinking=True)
@@ -814,7 +820,12 @@ def register_slash_commands(bot):
             group_items = list(await asyncio.gather(*(process_group(cfg) for cfg in group_configs)))
             eligible_count = sum(1 for item in group_items if item["is_ready"])
 
-            store_title = f"{interaction.guild.name} groups" if interaction.guild else "Roblox groups"
+            if interaction.guild:
+                suffix = " reseller groups" if config_type == "reseller" else " groups"
+                store_title = f"{interaction.guild.name}{suffix}"
+            else:
+                store_title = "Roblox reseller groups" if config_type == "reseller" else "Roblox groups"
+
             author_text = f"{user_data.get('displayName', user_data['name'])} (@{user_data['name']})"
 
             view = CheckPaginationView(
@@ -832,6 +843,16 @@ def register_slash_commands(bot):
         except Exception as e:
             await interaction.followup.send(f"❌ Gagal cek membership Roblox: {e}")
             return
+
+    @bot.tree.command(name="check", description="Cek apakah user Roblox sudah eligible order instant group")
+    @app_commands.describe(username_roblox="Username Roblox yang mau dicek")
+    async def check_slash(interaction: discord.Interaction, username_roblox: str):
+        await _handle_check_groups(interaction, username_roblox, config_type="community")
+
+    @bot.tree.command(name="check-reseller", description="Cek apakah user Roblox sudah eligible di group reseller")
+    @app_commands.describe(username_roblox="Username Roblox yang mau dicek")
+    async def check_reseller_slash(interaction: discord.Interaction, username_roblox: str):
+        await _handle_check_groups(interaction, username_roblox, config_type="reseller")
 
     async def _handle_commission(interaction: discord.Interaction, username_roblox: str):
         username_clean = sanitize_roblox_username(username_roblox) or username_roblox.strip()

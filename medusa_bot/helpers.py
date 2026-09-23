@@ -74,12 +74,11 @@ def format_rupiah(amount: int) -> str:
     return "Rp {:,.0f}".format(amount).replace(",", ".")
 
 
-def get_configured_roblox_groups() -> list:
+def get_configured_roblox_groups(config_type: str = "community") -> list:
     """
-    Parses Roblox groups configuration from:
-    1. A JSON file (community_groups.json, roblox_groups.json, or file path in COMMUNITY_GROUPS_FILE / ROBLOX_GROUPS_FILE)
-    2. ROBLOX_GROUP_IDS if it contains a JSON string or file path
-    3. ROBLOX_GROUP_IDS formatted as "group_id:min_days,group_id2:min_days2"
+    Parses Roblox groups configuration for either 'community' or 'reseller'.
+    - For 'community': checks COMMUNITY_GROUPS_FILE, community_groups.json, roblox_groups.json, or ROBLOX_GROUP_IDS.
+    - For 'reseller': checks RESELLER_GROUPS_FILE, reseller_groups.json, or RESELLER_GROUP_IDS.
 
     Returns list of dicts:
     [{"group_id": "35619375", "name": "Group Name", "min_days": 3}, ...]
@@ -87,8 +86,14 @@ def get_configured_roblox_groups() -> list:
     groups = []
     seen = set()
 
-    json_env_file = os.getenv("COMMUNITY_GROUPS_FILE") or os.getenv("ROBLOX_GROUPS_FILE")
-    possible_files = [json_env_file, "community_groups.json", "roblox_groups.json"]
+    if config_type == "reseller":
+        json_env_file = os.getenv("RESELLER_GROUPS_FILE")
+        possible_files = [json_env_file, "reseller_groups.json"]
+        env_ids = os.getenv("RESELLER_GROUP_IDS", "")
+    else:
+        json_env_file = os.getenv("COMMUNITY_GROUPS_FILE") or os.getenv("ROBLOX_GROUPS_FILE")
+        possible_files = [json_env_file, "community_groups.json", "roblox_groups.json"]
+        env_ids = ROBLOX_GROUP_IDS
 
     loaded_data = None
     for filepath in possible_files:
@@ -96,13 +101,13 @@ def get_configured_roblox_groups() -> list:
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     loaded_data = json.load(f)
-                log_debug("get_configured_roblox_groups.loaded_json", file=filepath, count=len(loaded_data) if isinstance(loaded_data, list) else 0)
+                log_debug("get_configured_roblox_groups.loaded_json", config_type=config_type, file=filepath, count=len(loaded_data) if isinstance(loaded_data, list) else 0)
                 break
             except Exception as e:
-                log_debug("get_configured_roblox_groups.json_error", file=filepath, error=str(e))
+                log_debug("get_configured_roblox_groups.json_error", config_type=config_type, file=filepath, error=str(e))
 
-    if loaded_data is None and ROBLOX_GROUP_IDS:
-        raw = ROBLOX_GROUP_IDS.strip()
+    if loaded_data is None and env_ids:
+        raw = env_ids.strip()
         if raw.startswith("[") or raw.startswith("{"):
             try:
                 loaded_data = json.loads(raw)
@@ -130,29 +135,34 @@ def get_configured_roblox_groups() -> list:
                     })
         return groups
 
-    for item in ROBLOX_GROUP_IDS.split(","):
-        cleaned = item.strip()
-        if not cleaned:
-            continue
-        if ":" in cleaned:
-            parts = cleaned.split(":", 1)
-            group_id = parts[0].strip()
-            try:
-                min_days = int(parts[1].strip())
-            except ValueError:
+    if env_ids:
+        for item in env_ids.split(","):
+            cleaned = item.strip()
+            if not cleaned:
+                continue
+            if ":" in cleaned:
+                parts = cleaned.split(":", 1)
+                group_id = parts[0].strip()
+                try:
+                    min_days = int(parts[1].strip())
+                except ValueError:
+                    min_days = 3
+            else:
+                group_id = cleaned
                 min_days = 3
-        else:
-            group_id = cleaned
-            min_days = 3
 
-        if group_id and group_id not in seen:
-            seen.add(group_id)
-            groups.append({
-                "group_id": group_id,
-                "name": None,
-                "min_days": min_days,
-            })
+            if group_id and group_id not in seen:
+                seen.add(group_id)
+                groups.append({
+                    "group_id": group_id,
+                    "name": None,
+                    "min_days": min_days,
+                })
     return groups
+
+
+def get_configured_reseller_groups() -> list:
+    return get_configured_roblox_groups(config_type="reseller")
 
 
 def get_configured_roblox_group_ids() -> list:
