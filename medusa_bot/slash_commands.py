@@ -767,7 +767,7 @@ def register_slash_commands(bot):
             async def process_group(config):
                 group_id = config["group_id"]
                 min_days = config["min_days"]
-                group_name = group_names.get(group_id, f"Group {group_id}")
+                group_name = (config.get("name") or group_names.get(group_id, f"Group {group_id}")).strip()
                 group_url = build_roblox_group_share_url(group_id)
 
                 async with semaphore:
@@ -777,14 +777,14 @@ def register_slash_commands(bot):
                         return {
                             "group_id": group_id,
                             "is_ready": False,
-                            "formatted_line": f"❕ [**{group_name}**]({group_url}) (this group hides its member list from every configured key)"
+                            "formatted_line": f"❕ **[{group_name}]({group_url})** (this group hides its member list from every configured key)"
                         }
 
                 if not membership:
                     return {
                         "group_id": group_id,
                         "is_ready": False,
-                        "formatted_line": f"🟥 [**{group_name}**]({group_url}) (join first)"
+                        "formatted_line": f"🟥 **[{group_name}]({group_url})** (join first)"
                     }
 
                 create_time_raw = membership.get("createTime")
@@ -792,7 +792,7 @@ def register_slash_commands(bot):
                     return {
                         "group_id": group_id,
                         "is_ready": False,
-                        "formatted_line": f"❕ [**{group_name}**]({group_url}) (data createTime tidak ditemukan)"
+                        "formatted_line": f"❕ **[{group_name}]({group_url})** (data createTime tidak ditemukan)"
                     }
 
                 create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
@@ -800,10 +800,10 @@ def register_slash_commands(bot):
                 is_ready = now_utc >= available_at
 
                 if is_ready:
-                    line = f"🍃 [**{group_name}**]({group_url}) (joined {format_roblox_join_date(create_time)})"
+                    line = f"🍃 **[{group_name}]({group_url})** (joined {format_roblox_join_date(create_time)})"
                 else:
                     rem_str = format_remaining_time(available_at, now_utc)
-                    line = f"❕ [**{group_name}**]({group_url}) ({rem_str})"
+                    line = f"❕ **[{group_name}]({group_url})** ({rem_str})"
 
                 return {
                     "group_id": group_id,

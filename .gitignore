@@ -1,5 +1,15 @@
-config.json
+# Environment variables
 .env
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Virtual environment
 venv/
+
+# Config files (optional - keep if you want to track or exclude)
+config.json
+community_groups.json
+# roblox_groups.json
+# qris_bot_info.json

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -75,12 +76,60 @@ def format_rupiah(amount: int) -> str:
 
 def get_configured_roblox_groups() -> list:
     """
-    Parses ROBLOX_GROUP_IDS which can contain group_id or group_id:min_days.
-    Example: "35619375:3,12345678:14,999999"
-    Returns a list of dicts: [{"group_id": "35619375", "min_days": 3}, ...]
+    Parses Roblox groups configuration from:
+    1. A JSON file (community_groups.json, roblox_groups.json, or file path in COMMUNITY_GROUPS_FILE / ROBLOX_GROUPS_FILE)
+    2. ROBLOX_GROUP_IDS if it contains a JSON string or file path
+    3. ROBLOX_GROUP_IDS formatted as "group_id:min_days,group_id2:min_days2"
+
+    Returns list of dicts:
+    [{"group_id": "35619375", "name": "Group Name", "min_days": 3}, ...]
     """
     groups = []
     seen = set()
+
+    json_env_file = os.getenv("COMMUNITY_GROUPS_FILE") or os.getenv("ROBLOX_GROUPS_FILE")
+    possible_files = [json_env_file, "community_groups.json", "roblox_groups.json"]
+
+    loaded_data = None
+    for filepath in possible_files:
+        if filepath and os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    loaded_data = json.load(f)
+                log_debug("get_configured_roblox_groups.loaded_json", file=filepath, count=len(loaded_data) if isinstance(loaded_data, list) else 0)
+                break
+            except Exception as e:
+                log_debug("get_configured_roblox_groups.json_error", file=filepath, error=str(e))
+
+    if loaded_data is None and ROBLOX_GROUP_IDS:
+        raw = ROBLOX_GROUP_IDS.strip()
+        if raw.startswith("[") or raw.startswith("{"):
+            try:
+                loaded_data = json.loads(raw)
+            except Exception:
+                pass
+        elif os.path.exists(raw):
+            try:
+                with open(raw, "r", encoding="utf-8") as f:
+                    loaded_data = json.load(f)
+            except Exception:
+                pass
+
+    if isinstance(loaded_data, list):
+        for item in loaded_data:
+            if isinstance(item, dict) and "group_id" in item:
+                gid = str(item["group_id"]).strip()
+                name = str(item["name"]).strip() if item.get("name") else None
+                duration = int(item.get("duration", item.get("min_days", 3)))
+                if gid and gid not in seen:
+                    seen.add(gid)
+                    groups.append({
+                        "group_id": gid,
+                        "name": name,
+                        "min_days": duration,
+                    })
+        return groups
+
     for item in ROBLOX_GROUP_IDS.split(","):
         cleaned = item.strip()
         if not cleaned:
@@ -100,6 +149,7 @@ def get_configured_roblox_groups() -> list:
             seen.add(group_id)
             groups.append({
                 "group_id": group_id,
+                "name": None,
                 "min_days": min_days,
             })
     return groups
