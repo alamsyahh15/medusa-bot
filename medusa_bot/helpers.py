@@ -169,8 +169,8 @@ def get_configured_roblox_group_ids() -> list:
     return [g["group_id"] for g in get_configured_roblox_groups()]
 
 
-async def get_roblox_user_avatar_url(session: aiohttp.ClientSession, user_id: int) -> Optional[str]:
-    url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
+async def get_roblox_user_avatar_url(session: aiohttp.ClientSession, user_id: int, size: str = "75x75") -> Optional[str]:
+    url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size={size}&format=Png&isCircular=false"
     try:
         async with session.get(url) as resp:
             if resp.status == 200:

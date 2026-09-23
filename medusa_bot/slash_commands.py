@@ -566,11 +566,7 @@ class CheckPaginationView(discord.ui.View):
         page_items = self.items[start_idx:end_idx]
 
         lines = [item["formatted_line"] for item in page_items]
-        divider = "──────────────────────────────"
-        if lines:
-            embed.description = f"{divider}\n" + "\n".join(lines)
-        else:
-            embed.description = "Tidak ada group."
+        embed.description = ("\n\n" + "\n".join(lines)) if lines else "Tidak ada group."
 
         embed.set_footer(text=f"{self.eligible_count}/{self.total_count} eligible • page {self.current_page + 1} of {self.total_pages}")
         return embed
