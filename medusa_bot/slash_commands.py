@@ -768,80 +768,184 @@ def register_slash_commands(bot):
                 await interaction.followup.send(f"❌ Username Roblox `{username_roblox}` tidak ditemukan atau terkena filter banned user.")
                 return
 
-            group_ids = [g["group_id"] for g in group_configs]
-            group_names = await get_roblox_group_names(bot.http_session, group_ids)
-            avatar_url = await get_roblox_user_avatar_url(bot.http_session, user_data["id"])
+            if config_type == "reseller":
+                group_ids = [g["group_id"] for g in group_configs]
+                group_names = await get_roblox_group_names(bot.http_session, group_ids)
+                avatar_url = await get_roblox_user_avatar_url(bot.http_session, user_data["id"])
 
-            now_utc = datetime.now(timezone.utc)
-            semaphore = asyncio.Semaphore(10)
+                now_utc = datetime.now(timezone.utc)
+                semaphore = asyncio.Semaphore(10)
 
-            async def process_group(config):
-                group_id = config["group_id"]
-                min_days = config["min_days"]
-                group_name = (config.get("name") or group_names.get(group_id, f"Group {group_id}")).strip()
-                group_url = build_roblox_group_share_url(group_id)
+                async def process_group_reseller(config):
+                    group_id = config["group_id"]
+                    min_days = config["min_days"]
+                    group_name = (config.get("name") or group_names.get(group_id, f"Group {group_id}")).strip()
+                    group_url = build_roblox_group_share_url(group_id)
 
-                async with semaphore:
-                    try:
-                        membership = await get_group_membership(bot.http_session, group_id, user_data["id"])
-                    except Exception:
+                    async with semaphore:
+                        try:
+                            membership = await get_group_membership(bot.http_session, group_id, user_data["id"])
+                        except Exception:
+                            return {
+                                "group_id": group_id,
+                                "is_ready": False,
+                                "formatted_line": f"❕ **[{group_name}]({group_url})** (this group hides its member list from every configured key)"
+                            }
+
+                    if not membership:
                         return {
                             "group_id": group_id,
                             "is_ready": False,
-                            "formatted_line": f"❕ **[{group_name}]({group_url})** (this group hides its member list from every configured key)"
+                            "formatted_line": f"❌ **[{group_name}]({group_url})** (join first)"
                         }
 
-                if not membership:
+                    create_time_raw = membership.get("createTime")
+                    if not create_time_raw:
+                        return {
+                            "group_id": group_id,
+                            "is_ready": False,
+                            "formatted_line": f"❕ **[{group_name}]({group_url})** (data createTime tidak ditemukan)"
+                        }
+
+                    create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
+                    available_at = create_time + timedelta(days=min_days)
+                    is_ready = now_utc >= available_at
+
+                    if is_ready:
+                        line = f"✅ **[{group_name}]({group_url})** (joined {format_roblox_join_date(create_time)})"
+                    else:
+                        rem_str = format_remaining_time(available_at, now_utc)
+                        line = f"❕ **[{group_name}]({group_url})** ({rem_str})"
+
                     return {
                         "group_id": group_id,
-                        "is_ready": False,
-                        "formatted_line": f"❌ **[{group_name}]({group_url})** (join first)"
+                        "is_ready": is_ready,
+                        "formatted_line": line
                     }
 
-                create_time_raw = membership.get("createTime")
-                if not create_time_raw:
-                    return {
-                        "group_id": group_id,
-                        "is_ready": False,
-                        "formatted_line": f"❕ **[{group_name}]({group_url})** (data createTime tidak ditemukan)"
-                    }
+                group_items = list(await asyncio.gather(*(process_group_reseller(cfg) for cfg in group_configs)))
+                eligible_count = sum(1 for item in group_items if item["is_ready"])
 
-                create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
-                available_at = create_time + timedelta(days=min_days)
-                is_ready = now_utc >= available_at
-
-                if is_ready:
-                    line = f"✅ **[{group_name}]({group_url})** (joined {format_roblox_join_date(create_time)})"
+                if interaction.guild:
+                    store_title = f"{interaction.guild.name} reseller groups"
                 else:
-                    rem_str = format_remaining_time(available_at, now_utc)
-                    line = f"❕ **[{group_name}]({group_url})** ({rem_str})"
+                    store_title = "Roblox reseller groups"
 
-                return {
-                    "group_id": group_id,
-                    "is_ready": is_ready,
-                    "formatted_line": line
-                }
+                author_text = f"{user_data.get('displayName', user_data['name'])} (@{user_data['name']})"
+                author_url = f"https://www.roblox.com/users/{user_data['id']}/profile"
 
-            group_items = list(await asyncio.gather(*(process_group(cfg) for cfg in group_configs)))
-            eligible_count = sum(1 for item in group_items if item["is_ready"])
+                view = CheckPaginationView(
+                    author_id=interaction.user.id,
+                    title_text=store_title,
+                    author_text=author_text,
+                    author_url=author_url,
+                    avatar_url=avatar_url,
+                    items=group_items,
+                    eligible_count=eligible_count,
+                    page_size=15
+                )
+                initial_embed = view.build_embed()
+                await send_interaction_message(interaction, embed=initial_embed, view=view)
 
-            store_title = "Medusablox Groups"
+            else:
+                now_utc = datetime.now(timezone.utc)
+                semaphore = asyncio.Semaphore(10)
 
-            author_text = f"{user_data.get('displayName', user_data['name'])} (@{user_data['name']})"
-            author_url = f"https://www.roblox.com/users/{user_data['id']}/profile"
+                async def process_group(index, config):
+                    group_id = config["group_id"]
+                    min_days = config["min_days"]
+                    async with semaphore:
+                        try:
+                            membership = await get_group_membership(bot.http_session, group_id, user_data["id"])
+                        except Exception:
+                            membership = None
+                    return index, config, membership
 
-            view = CheckPaginationView(
-                author_id=interaction.user.id,
-                title_text=store_title,
-                author_text=author_text,
-                author_url=author_url,
-                avatar_url=avatar_url,
-                items=group_items,
-                eligible_count=eligible_count,
-                page_size=15
-            )
-            initial_embed = view.build_embed()
-            await send_interaction_message(interaction, embed=initial_embed, view=view)
+                results = await asyncio.gather(*(process_group(idx, cfg) for idx, cfg in enumerate(group_configs, start=1)))
+
+                group_lines = []
+                has_ready_group = False
+                earliest_available_at = None
+                missing_group_ids = []
+
+                for index, config, membership in results:
+                    group_id = config["group_id"]
+                    min_days = config["min_days"]
+
+                    if not membership or not membership.get("createTime"):
+                        missing_group_ids.append((index, group_id))
+                        group_lines.append(
+                            f"**Group {index}** (`{group_id}`)\nBelum join group ini."
+                        )
+                        continue
+
+                    create_time_raw = membership.get("createTime")
+                    create_time = datetime.fromisoformat(create_time_raw.replace("Z", "+00:00"))
+                    available_at = create_time + timedelta(days=min_days)
+
+                    is_ready = now_utc >= available_at
+
+                    if is_ready:
+                        has_ready_group = True
+                        group_lines.append(
+                            f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nStatus: siap dipakai untuk order."
+                        )
+                    else:
+                        if earliest_available_at is None or available_at < earliest_available_at:
+                            earliest_available_at = available_at
+                        group_lines.append(
+                            f"**Group {index}** (`{group_id}`)\nSudah join sejak {format_datetime_gmt7(create_time)}.\nBisa dipakai untuk order mulai {format_datetime_gmt7(available_at)}."
+                        )
+
+                embed = discord.Embed(
+                    title="🔍 Hasil Cek Membership Roblox",
+                    description="User bisa order instant group jika minimal ada satu group yang sudah diikuti selama 3 hari.",
+                    color=0x2ECC71 if has_ready_group else 0xF1C40F,
+                )
+                embed.add_field(name="Username", value=user_data["name"], inline=True)
+                embed.add_field(name="Display Name", value=user_data.get("displayName") or user_data["name"], inline=True)
+                embed.add_field(name="User ID", value=str(user_data["id"]), inline=True)
+
+                if has_ready_group:
+                    log_debug("check.eligible", username=user_data["name"], user_id=user_data["id"], group_count=len(group_configs))
+                    embed.add_field(
+                        name="Status",
+                        value="✅ User ini sudah eligible untuk order robux instant group karena minimal ada satu group yang sudah 3 hari.",
+                        inline=False,
+                    )
+                else:
+                    log_debug(
+                        "check.not_eligible",
+                        username=user_data["name"],
+                        user_id=user_data["id"],
+                        group_count=len(group_configs),
+                        earliest_available_at=format_datetime_gmt7(earliest_available_at) if earliest_available_at else "unknown",
+                    )
+                    status_value = "⏳ User ini belum eligible untuk order instant group."
+                    if earliest_available_at:
+                        status_value += f"\nEstimasi paling cepat bisa order: **{format_datetime_gmt7(earliest_available_at)}**."
+                    if missing_group_ids:
+                        status_value += "\nMasih ada group yang belum di-join, tapi cukup salah satu group yang siap 3 hari."
+                    embed.add_field(
+                        name="Status",
+                        value=status_value,
+                        inline=False,
+                    )
+
+                embed.add_field(name="Detail Group", value="\n\n".join(group_lines), inline=False)
+
+                view = None
+                if missing_group_ids:
+                    view = discord.ui.View()
+                    for idx, g_id in missing_group_ids:
+                        view.add_item(
+                            discord.ui.Button(
+                                label=f"Join Group {idx}",
+                                url=build_roblox_group_share_url(g_id),
+                            )
+                        )
+
+                await send_interaction_message(interaction, embed=embed, view=view)
 
         except Exception as e:
             await interaction.followup.send(f"❌ Gagal cek membership Roblox: {e}")
