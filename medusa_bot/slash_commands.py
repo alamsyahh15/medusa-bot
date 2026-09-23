@@ -566,7 +566,11 @@ class CheckPaginationView(discord.ui.View):
         page_items = self.items[start_idx:end_idx]
 
         lines = [item["formatted_line"] for item in page_items]
-        embed.description = "\n".join(lines) if lines else "Tidak ada group."
+        divider = "──────────────────────────────"
+        if lines:
+            embed.description = f"{divider}\n" + "\n".join(lines)
+        else:
+            embed.description = "Tidak ada group."
 
         embed.set_footer(text=f"{self.eligible_count}/{self.total_count} eligible • page {self.current_page + 1} of {self.total_pages}")
         return embed
@@ -790,7 +794,7 @@ def register_slash_commands(bot):
                     return {
                         "group_id": group_id,
                         "is_ready": False,
-                        "formatted_line": f"🟥 **[{group_name}]({group_url})** (join first)"
+                        "formatted_line": f"❌ **[{group_name}]({group_url})** (join first)"
                     }
 
                 create_time_raw = membership.get("createTime")
@@ -806,7 +810,7 @@ def register_slash_commands(bot):
                 is_ready = now_utc >= available_at
 
                 if is_ready:
-                    line = f"🍃 **[{group_name}]({group_url})** (joined {format_roblox_join_date(create_time)})"
+                    line = f"✅ **[{group_name}]({group_url})** (joined {format_roblox_join_date(create_time)})"
                 else:
                     rem_str = format_remaining_time(available_at, now_utc)
                     line = f"❕ **[{group_name}]({group_url})** ({rem_str})"
