@@ -530,6 +530,7 @@ class CheckPaginationView(discord.ui.View):
         author_id: int,
         title_text: str,
         author_text: str,
+        author_url: Optional[str],
         avatar_url: Optional[str],
         items: list,
         eligible_count: int,
@@ -539,6 +540,7 @@ class CheckPaginationView(discord.ui.View):
         self.author_id = author_id
         self.title_text = title_text
         self.author_text = author_text
+        self.author_url = author_url
         self.avatar_url = avatar_url
         self.items = items
         self.eligible_count = eligible_count
@@ -557,7 +559,10 @@ class CheckPaginationView(discord.ui.View):
             title=self.title_text,
             color=0x2B2D31
         )
-        embed.set_author(name=self.author_text)
+        if self.author_url:
+            embed.set_author(name=self.author_text, url=self.author_url)
+        else:
+            embed.set_author(name=self.author_text)
         if self.avatar_url:
             embed.set_thumbnail(url=self.avatar_url)
 
@@ -820,18 +825,16 @@ def register_slash_commands(bot):
             group_items = list(await asyncio.gather(*(process_group(cfg) for cfg in group_configs)))
             eligible_count = sum(1 for item in group_items if item["is_ready"])
 
-            if interaction.guild:
-                suffix = " reseller groups" if config_type == "reseller" else " groups"
-                store_title = f"{interaction.guild.name}{suffix}"
-            else:
-                store_title = "Roblox reseller groups" if config_type == "reseller" else "Roblox groups"
+            store_title = "Medusablox Groups"
 
             author_text = f"{user_data.get('displayName', user_data['name'])} (@{user_data['name']})"
+            author_url = f"https://www.roblox.com/users/{user_data['id']}/profile"
 
             view = CheckPaginationView(
                 author_id=interaction.user.id,
                 title_text=store_title,
                 author_text=author_text,
+                author_url=author_url,
                 avatar_url=avatar_url,
                 items=group_items,
                 eligible_count=eligible_count,
