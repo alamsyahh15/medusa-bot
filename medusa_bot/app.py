@@ -5,6 +5,7 @@ from discord.ext import commands
 from .config import DISCORD_TOKEN, ENABLE_MEMBERS_INTENT, HTTP_TIMEOUT_SECONDS, set_bot_meta_value, should_sync_slash_commands
 from .lifecycle import register_lifecycle
 from .rating import RatingRequestView
+from .stock import StockNotifView
 from .slash_commands import register_slash_commands
 
 
@@ -22,6 +23,7 @@ class QRISBot(commands.Bot):
         timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
         self.http_session = aiohttp.ClientSession(timeout=timeout)
         self.add_view(RatingRequestView())
+        self.add_view(StockNotifView())
         should_sync, remaining_seconds = should_sync_slash_commands()
         if not should_sync:
             print(f"⏭️ Slash command sync dilewati untuk hindari rate limit. Coba lagi dalam {remaining_seconds} detik.")

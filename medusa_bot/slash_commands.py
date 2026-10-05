@@ -597,7 +597,12 @@ class CheckPaginationView(discord.ui.View):
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
+from .stock import register_stock_commands
+
+
 def register_slash_commands(bot):
+    register_stock_commands(bot)
+
     @bot.tree.command(name="qris", description="Generate QRIS dinamis")
     @app_commands.describe(amount="Nominal IDR, contoh 26000")
     async def qris_generate(interaction: discord.Interaction, amount: int):
