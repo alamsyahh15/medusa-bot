@@ -108,7 +108,7 @@ def build_stock_embed(guild_name: Optional[str] = None) -> discord.Embed:
         "⏱️ Estimasi: 3–7 hari kerja\n\n"
         "👥 **GROUP PAYOUT**\n"
         f"` 🔘 IN STOCK ` **{grp_stock} R$**\n"
-        "⚡ Estimasi: Instant – maks 3 hari\n\n"
+        "⚡ Estimasi: Instant – maks 6 jam\n\n"
         "🆔 **VIA USERNAME**\n"
         f"` 🔘 IN STOCK ` **{usr_stock} R$**\n"
         "⚡ Estimasi: Instant — di atas 5.000 R$ bisa >1 hari\n\n"
