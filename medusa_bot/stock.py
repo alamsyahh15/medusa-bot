@@ -250,20 +250,20 @@ def register_stock_commands(bot):
             except Exception as e:
                 log_debug("adjust_stock.edit_embed_error", error=str(e))
 
-        # 3. Target users from notif_stock_user.json
-        users_data = load_notif_stock_users()
+        # 3. Target users from notif_stock_user.json (hanya kirim DM jika stok > 0)
         target_uids = set()
-
-        if type_key == "all":
-            for k in ["gamepass", "group_payout", "via_username"]:
-                target_uids.update(users_data.get(k, []))
-        else:
-            target_uids.update(users_data.get(type_key, []))
-
-        # 4. Dispatch DM notifications
         success_count = 0
         failed_count = 0
 
+        if stock > 0:
+            users_data = load_notif_stock_users()
+            if type_key == "all":
+                for k in ["gamepass", "group_payout", "via_username"]:
+                    target_uids.update(users_data.get(k, []))
+            else:
+                target_uids.update(users_data.get(type_key, []))
+
+        # 4. Dispatch DM notifications
         if target_uids:
             gp_formatted = format_robux_amount(stock_data["gamepass"])
             grp_formatted = format_robux_amount(stock_data["group_payout"])
@@ -282,7 +282,7 @@ def register_stock_commands(bot):
                 ),
                 color=0x00D1D1,
             )
-            dm_embed.set_footer(text="ValtusBlox Stock Reminder • Notifikasi DM otomatis")
+            dm_embed.set_footer(text="Medusablox Stock Reminder • Notifikasi DM otomatis")
 
             for uid in target_uids:
                 try:
@@ -313,13 +313,19 @@ def register_stock_commands(bot):
             value="✅ Ter-update" if embed_updated else "⚠️ Belum ada / tidak ditemukan",
             inline=True,
         )
-        result_embed.add_field(
-            name="Pengiriman DM Notifikasi",
-            value=(
+
+        if stock == 0:
+            notif_report_value = "⏭️ Dilewati (Stok set ke 0 R$)"
+        else:
+            notif_report_value = (
                 f"Total target: **{len(target_uids)}** user\n"
                 f"✅ Sukses terkirim: **{success_count}**\n"
                 f"❌ Gagal (DM ditutup/error): **{failed_count}**"
-            ),
+            )
+
+        result_embed.add_field(
+            name="Pengiriman DM Notifikasi",
+            value=notif_report_value,
             inline=False,
         )
         await interaction.followup.send(embed=result_embed, ephemeral=True)
