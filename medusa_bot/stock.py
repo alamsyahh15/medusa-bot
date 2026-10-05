@@ -177,16 +177,17 @@ def register_stock_commands(bot):
     async def notif_stock_command(interaction: discord.Interaction):
         embed = build_stock_embed(interaction.guild.name if interaction.guild else None)
         view = StockNotifView()
-        await interaction.response.send_message(embed=embed, view=view)
         try:
-            msg = await interaction.original_response()
+            msg = await interaction.channel.send(embed=embed, view=view)
             if msg:
                 stock_data = load_stock_info()
                 stock_data["embed_channel_id"] = msg.channel.id
                 stock_data["embed_message_id"] = msg.id
                 save_stock_info(stock_data)
+            await interaction.response.send_message("✅ Embed info stok berhasil dikirim ke channel ini!", ephemeral=True)
         except Exception as e:
-            log_debug("notif_stock.save_msg_error", error=str(e))
+            log_debug("notif_stock.send_msg_error", error=str(e))
+            await interaction.response.send_message(f"❌ Gagal mengirim embed info stok: {e}", ephemeral=True)
 
     @bot.tree.command(name="adjust_stock", description="Update stok Robux dan kirim notifikasi DM ke user")
     @app_commands.describe(
