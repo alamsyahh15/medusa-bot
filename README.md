@@ -16,7 +16,7 @@ Terms of Service:
 ### Semua member
 | Command | Contoh | Keterangan |
 |---|---|---|
-| `/qris amount` | `/qris amount:26000` | Generate QRIS dinamis |
+| `/qris amount [region]` | `/qris amount:26000 region:Indonesia` | Generate QRIS dinamis (Indonesia / Luar Negeri) |
 | `/calc value` | `/calc value:500` | Kalkulasi Robux/IDR untuk semua metode |
 | `/check username_roblox` | `/check username_roblox:Sebas57chan` | Cek eligibility instant group |
 | `/commision username_roblox` | `/commision username_roblox:sebas57chan` | Cek rincian komisi member Roblox |
@@ -54,9 +54,10 @@ Terms of Service:
 
 1. Admin ketik `/qrissetup`
 2. Isi:
-   - `static_payload`
-   - `merchant_name`
-3. Test dengan `/qris amount:26000`
+   - `static_payload`: Payload QRIS statis lokal / Indonesia
+   - `foreigner_static_payload` *(opsional)*: Payload QRIS statis luar negeri (foreigner)
+   - `merchant_name` *(opsional)*: Nama merchant (otomatis dideteksi dari payload jika kosong)
+3. Test dengan `/qris amount:26000` atau `/qris amount:26000 region:Luar Negeri`
 
 ### Cara dapat static QRIS payload
 Scan QR statis merchant menggunakan QR scanner yang menampilkan teks hasil scan, lalu salin payload-nya.

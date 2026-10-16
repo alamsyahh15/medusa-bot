@@ -615,8 +615,21 @@ def register_slash_commands(bot):
     register_stock_commands(bot)
 
     @bot.tree.command(name="qris", description="Generate QRIS dinamis")
-    @app_commands.describe(amount="Nominal IDR, contoh 26000")
-    async def qris_generate(interaction: discord.Interaction, amount: int):
+    @app_commands.describe(
+        amount="Nominal IDR, contoh 26000",
+        region="Pilih metode: Indonesia atau Luar Negeri (default: Indonesia)",
+    )
+    @app_commands.choices(
+        region=[
+            app_commands.Choice(name="Indonesia", value="indonesia"),
+            app_commands.Choice(name="Luar Negeri", value="luar_negeri"),
+        ]
+    )
+    async def qris_generate(
+        interaction: discord.Interaction,
+        amount: int,
+        region: Optional[app_commands.Choice[str]] = None,
+    ):
         guild_config = get_guild_config(interaction.guild.id)
         static_qris = guild_config.get("static_qris") if guild_config else None
         if not guild_config or not static_qris:
@@ -630,9 +643,27 @@ def register_slash_commands(bot):
             )
             return
 
+        selected_region = region.value if region else "indonesia"
+        if selected_region == "luar_negeri":
+            target_payload = guild_config.get("foreigner_static_qris")
+            if not target_payload:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="⚙️ QRIS Luar Negeri belum dikonfigurasi",
+                        description="QRIS Luar Negeri (Foreigner) belum diatur di server ini.\nAdmin dapat menyetelnya via `/qrissetup`.",
+                        color=0xE67E22,
+                    ),
+                    ephemeral=True,
+                )
+                return
+            region_name = "Luar Negeri"
+        else:
+            target_payload = static_qris
+            region_name = "Indonesia"
+
         merchant_name = (
             guild_config.get("merchant_name")
-            or parse_merchant_name_from_qris_payload(static_qris)
+            or parse_merchant_name_from_qris_payload(target_payload)
             or "Merchant"
         )
 
@@ -648,7 +679,7 @@ def register_slash_commands(bot):
         final_amount = calculate_qris_total_with_admin_fee(original_amount)
         await interaction.response.defer(thinking=True)
         try:
-            payload = build_dynamic_qris_payload(static_qris, original_amount)
+            payload = build_dynamic_qris_payload(target_payload, original_amount)
             if not payload:
                 raise ValueError("Format payload QRIS tidak valid atau gagal diproses.")
             image_bytes = generate_qris_image(
@@ -662,12 +693,13 @@ def register_slash_commands(bot):
             return
 
         desc = (
+            f"Metode: **{region_name}**\n"
             f"Subtotal: **{format_rupiah(original_amount)}**\n"
             f"Biaya admin (0.7%): **{format_rupiah(fee_amount)}**\n"
             f"Total bayar: **{format_rupiah(final_amount)}**"
         )
         file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
-        embed = discord.Embed(title="💳 QRIS Payment", description=desc, color=0x1A1F5E)
+        embed = discord.Embed(title=f"💳 QRIS Payment ({region_name})", description=desc, color=0x1A1F5E)
         embed.set_image(url=f"attachment://qris_{final_amount}.png")
         embed.set_footer(text=f"E-Wallet transaction cannot be refunded • {merchant_name}")
         await interaction.followup.send(file=file, embed=embed)
@@ -701,25 +733,58 @@ def register_slash_commands(bot):
 
     @bot.tree.command(name="qrissetup", description="Setup QRIS untuk server ini (Admin only)")
     @app_commands.describe(
-        static_payload="Payload QRIS statis dari QR merchant kamu",
+        static_payload="Payload QRIS statis lokal / Indonesia",
+        foreigner_static_payload="Payload QRIS statis luar negeri / foreigner (opsional)",
         merchant_name="Nama merchant yang tampil di QR (opsional, otomatis dideteksi dari payload)",
     )
     @app_commands.default_permissions(administrator=True)
-    async def qris_setup(interaction: discord.Interaction, static_payload: str, merchant_name: Optional[str] = None):
+    async def qris_setup(
+        interaction: discord.Interaction,
+        static_payload: str,
+        foreigner_static_payload: Optional[str] = None,
+        merchant_name: Optional[str] = None,
+    ):
         await interaction.response.defer(ephemeral=True)
         static_payload = (static_payload or "").replace("\r", "").replace("\n", "").strip()
         if not validate_qris(static_payload):
-            await interaction.followup.send(embed=discord.Embed(title="❌ Payload tidak valid", description="Pastikan payload dimulai `000201`, mengandung `5802ID`, dan merupakan QRIS statis (`010211`).", color=0xE74C3C), ephemeral=True)
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="❌ Payload Indonesia tidak valid",
+                    description="Pastikan payload dimulai `000201`, mengandung `5802ID`, dan merupakan QRIS statis (`010211`).",
+                    color=0xE74C3C,
+                ),
+                ephemeral=True,
+            )
             return
+
+        clean_foreigner = None
+        if foreigner_static_payload:
+            clean_foreigner = foreigner_static_payload.replace("\r", "").replace("\n", "").strip()
+            if not validate_qris(clean_foreigner):
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        title="❌ Payload Luar Negeri tidak valid",
+                        description="Pastikan payload dimulai `000201`, mengandung `5802ID`, dan merupakan QRIS statis (`010211`).",
+                        color=0xE74C3C,
+                    ),
+                    ephemeral=True,
+                )
+                return
+
         detected_name = parse_merchant_name_from_qris_payload(static_payload)
+        if not detected_name and clean_foreigner:
+            detected_name = parse_merchant_name_from_qris_payload(clean_foreigner)
+
         effective_merchant = (merchant_name or "").strip() or detected_name or "Merchant"
-        set_guild_config(interaction.guild.id, static_payload, effective_merchant)
+        set_guild_config(interaction.guild.id, static_payload, effective_merchant, clean_foreigner)
         fee_status = "✅ Aktif untuk semua nominal (+0.7%)"
         embed = discord.Embed(title="✅ QRIS berhasil dikonfigurasi!", color=0x2ECC71)
         embed.add_field(name="Merchant", value=effective_merchant, inline=False)
-        embed.add_field(name="Payload (preview)", value=f"`{static_payload[:50]}...`", inline=False)
+        embed.add_field(name="Payload Indonesia", value=f"`{static_payload[:50]}...`", inline=False)
+        if clean_foreigner:
+            embed.add_field(name="Payload Luar Negeri", value=f"`{clean_foreigner[:50]}...`", inline=False)
         embed.add_field(name="Biaya Admin", value=fee_status, inline=False)
-        embed.add_field(name="Test sekarang", value="`/qris amount:10000`", inline=False)
+        embed.add_field(name="Test sekarang", value="`/qris amount:10000` atau `/qris amount:10000 region:Luar Negeri`", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="qrisinfo", description="Lihat konfigurasi QRIS server ini")
@@ -733,7 +798,9 @@ def register_slash_commands(bot):
         allowed_role_text = ", ".join(role.mention for role in allowed_roles) if allowed_roles else "Semua member"
         embed = discord.Embed(title="📋 Konfigurasi QRIS Server", color=0x1A1F5E)
         embed.add_field(name="Merchant", value=cfg["merchant_name"], inline=False)
-        embed.add_field(name="Payload (preview)", value=f"`{cfg['static_qris'][:50]}...`", inline=False)
+        embed.add_field(name="Payload Indonesia", value=f"`{cfg['static_qris'][:50]}...`", inline=False)
+        foreigner_preview = f"`{cfg['foreigner_static_qris'][:50]}...`" if cfg.get("foreigner_static_qris") else "Belum diatur"
+        embed.add_field(name="Payload Luar Negeri", value=foreigner_preview, inline=False)
         embed.add_field(name="Biaya Admin", value=fee_status, inline=False)
         embed.add_field(name="Role Order/Payment", value=allowed_role_text, inline=False)
         embed.add_field(name="Status", value="✅ Aktif", inline=True)
@@ -751,7 +818,7 @@ def register_slash_commands(bot):
     @bot.tree.command(name="qrishelp", description="Tampilkan semua perintah QRIS Bot")
     async def qris_help(interaction: discord.Interaction):
         embed = discord.Embed(title="📖 QRIS Bot — Bantuan", color=0x1A1F5E)
-        embed.add_field(name="/qris", value="Generate QRIS. Contoh: `/qris amount:26000`", inline=False)
+        embed.add_field(name="/qris", value="Generate QRIS dinamis. Contoh: `/qris amount:26000` atau `/qris amount:26000 region:Luar Negeri`", inline=False)
         embed.add_field(name="/calc", value="Kalkulasi Robux/IDR untuk semua metode sekaligus. Contoh: `/calc value:500`, `/calc value:15k`, atau `/calc value:100rb`", inline=False)
         embed.add_field(name="/check", value="Cek apakah user Roblox sudah 3 hari di group. Contoh: `/check username_roblox`", inline=False)
         embed.add_field(name="/check-reseller", value="Cek apakah user Roblox sudah eligible di group reseller. Contoh: `/check-reseller username_roblox`", inline=False)
@@ -763,7 +830,7 @@ def register_slash_commands(bot):
         embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya dropdown untuk ulasan bintang 1-5.", inline=False)
         embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
         embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
-        embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
+        embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini (Payload Indonesia & Luar Negeri). (Admin only)", inline=False)
         embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
         embed.add_field(name="/qrisreset 🔒", value="Hapus konfigurasi QRIS. (Admin only)", inline=False)
         embed.add_field(name="/leaderboardset 🔒", value="Set atau remove channel leaderboard. (Admin only)", inline=False)

@@ -114,13 +114,17 @@ def has_qris_config(guild_id: int) -> bool:
     return bool(cfg.get("static_qris") and cfg.get("merchant_name"))
 
 
-def set_guild_config(guild_id: int, qris: str, merchant: str):
+def set_guild_config(guild_id: int, qris: str, merchant: str, foreigner_qris: Optional[str] = None):
     config = load_config()
     guild_key = str(guild_id)
     if guild_key not in config:
         config[guild_key] = {}
     config[guild_key]["static_qris"] = qris
     config[guild_key]["merchant_name"] = merchant
+    if foreigner_qris:
+        config[guild_key]["foreigner_static_qris"] = foreigner_qris
+    else:
+        config[guild_key].pop("foreigner_static_qris", None)
     save_config(config)
 
 
@@ -130,6 +134,7 @@ def delete_guild_config(guild_id: int):
     if guild_key in config:
         config[guild_key].pop("static_qris", None)
         config[guild_key].pop("merchant_name", None)
+        config[guild_key].pop("foreigner_static_qris", None)
         if not config[guild_key]:
             del config[guild_key]
         save_config(config)

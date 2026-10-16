@@ -108,7 +108,7 @@ def calculate_qris_admin_fee(nominal: Union[int, float]) -> int:
         base_amount = 0
     if not base_amount:
         return 0
-    return math.ceil(base_amount * 0.005)
+    return math.ceil(base_amount * ADMIN_FEE_RATE)
 
 
 def calculate_qris_total_with_admin_fee(nominal: Union[int, float]) -> int:
