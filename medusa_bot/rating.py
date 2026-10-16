@@ -60,7 +60,7 @@ class RatingModal(discord.ui.Modal):
         now_utc = datetime.now(timezone.utc)
         embed = discord.Embed(
             description=(
-                f"## {interaction.user.display_name} memberi review\n\n"
+                f"### {interaction.user.display_name} memberi review\n\n"
                 f"**{filled_stars}**{empty_stars} • **{rating_value}/5**\n\n"
                 f"{quoted_comment}"
             ),
