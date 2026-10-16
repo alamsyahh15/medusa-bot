@@ -36,7 +36,10 @@ from .helpers import (
     apply_admin_fee,
     build_calc_result_embed,
     build_calc_usage_embed,
+    build_dynamic_qris_payload,
     build_roblox_group_share_url,
+    calculate_qris_admin_fee,
+    calculate_qris_total_with_admin_fee,
     ensure_order_interaction_access,
     extract_ticket_identity,
     fetch_and_render_leaderboard,
@@ -59,6 +62,7 @@ from .helpers import (
     lookup_roblox_user,
     make_dynamic_qris,
     parse_calc_value,
+    parse_merchant_name_from_qris_payload,
     parse_robux_amount_input,
     place_external_order,
     place_marketplace_order,
@@ -353,8 +357,8 @@ class MarketplaceOrderModal(discord.ui.Modal, title="Form Order Merchant"):
         order_num = order_data.get("order_number") or order_data.get("order_id") or res.get("order_number") or "-"
 
         original_amount = self.total_price
-        final_amount = apply_admin_fee(original_amount)
-        fee_amount = final_amount - original_amount
+        fee_amount = calculate_qris_admin_fee(original_amount)
+        final_amount = calculate_qris_total_with_admin_fee(original_amount)
 
         embed = discord.Embed(
             title="🛍️ Marketplace Order Berhasil!",
@@ -371,13 +375,20 @@ class MarketplaceOrderModal(discord.ui.Modal, title="Form Order Merchant"):
 
         file = None
         guild_config = get_guild_config(interaction.guild.id) if interaction.guild else None
-        if guild_config and guild_config.get("static_qris") and guild_config.get("merchant_name"):
+        if guild_config and guild_config.get("static_qris"):
+            merchant_name = (
+                guild_config.get("merchant_name")
+                or parse_merchant_name_from_qris_payload(guild_config.get("static_qris", ""))
+                or "Merchant"
+            )
             try:
-                payload = make_dynamic_qris(guild_config["static_qris"], final_amount)
+                payload = build_dynamic_qris_payload(guild_config["static_qris"], original_amount)
+                if not payload:
+                    raise ValueError("Format payload QRIS tidak valid.")
                 image_bytes = generate_qris_image(
                     payload,
                     final_amount,
-                    guild_config["merchant_name"],
+                    merchant_name,
                     original_amount=original_amount,
                 )
                 filename = f"qris_{final_amount}.png"
@@ -607,7 +618,8 @@ def register_slash_commands(bot):
     @app_commands.describe(amount="Nominal IDR, contoh 26000")
     async def qris_generate(interaction: discord.Interaction, amount: int):
         guild_config = get_guild_config(interaction.guild.id)
-        if not guild_config or not guild_config.get("static_qris") or not guild_config.get("merchant_name"):
+        static_qris = guild_config.get("static_qris") if guild_config else None
+        if not guild_config or not static_qris:
             await interaction.response.send_message(
                 embed=discord.Embed(
                     title="⚙️ QRIS belum dikonfigurasi",
@@ -618,6 +630,12 @@ def register_slash_commands(bot):
             )
             return
 
+        merchant_name = (
+            guild_config.get("merchant_name")
+            or parse_merchant_name_from_qris_payload(static_qris)
+            or "Merchant"
+        )
+
         if amount <= 0:
             await interaction.response.send_message("❌ Nominal harus lebih dari 0.", ephemeral=True)
             return
@@ -626,21 +644,23 @@ def register_slash_commands(bot):
             return
 
         original_amount = amount
-        final_amount = apply_admin_fee(amount)
+        fee_amount = calculate_qris_admin_fee(original_amount)
+        final_amount = calculate_qris_total_with_admin_fee(original_amount)
         await interaction.response.defer(thinking=True)
         try:
-            payload = make_dynamic_qris(guild_config["static_qris"], final_amount)
+            payload = build_dynamic_qris_payload(static_qris, original_amount)
+            if not payload:
+                raise ValueError("Format payload QRIS tidak valid atau gagal diproses.")
             image_bytes = generate_qris_image(
                 payload,
                 final_amount,
-                guild_config["merchant_name"],
+                merchant_name,
                 original_amount=original_amount,
             )
         except Exception as e:
             await interaction.followup.send(f"❌ Gagal generate QR: {e}")
             return
 
-        fee_amount = final_amount - original_amount
         desc = (
             f"Subtotal: **{format_rupiah(original_amount)}**\n"
             f"Biaya admin (0.5%): **{format_rupiah(fee_amount)}**\n"
@@ -649,7 +669,7 @@ def register_slash_commands(bot):
         file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
         embed = discord.Embed(title="💳 QRIS Payment", description=desc, color=0x1A1F5E)
         embed.set_image(url=f"attachment://qris_{final_amount}.png")
-        embed.set_footer(text=f"E-Wallet transaction cannot be refunded • {guild_config['merchant_name']}")
+        embed.set_footer(text=f"E-Wallet transaction cannot be refunded • {merchant_name}")
         await interaction.followup.send(file=file, embed=embed)
 
     @bot.tree.command(name="calc", description="Kalkulasi Robux dan IDR")
@@ -682,18 +702,21 @@ def register_slash_commands(bot):
     @bot.tree.command(name="qrissetup", description="Setup QRIS untuk server ini (Admin only)")
     @app_commands.describe(
         static_payload="Payload QRIS statis dari QR merchant kamu",
-        merchant_name="Nama merchant yang tampil di QR",
+        merchant_name="Nama merchant yang tampil di QR (opsional, otomatis dideteksi dari payload)",
     )
     @app_commands.default_permissions(administrator=True)
-    async def qris_setup(interaction: discord.Interaction, static_payload: str, merchant_name: str):
+    async def qris_setup(interaction: discord.Interaction, static_payload: str, merchant_name: Optional[str] = None):
         await interaction.response.defer(ephemeral=True)
+        static_payload = (static_payload or "").replace("\r", "").replace("\n", "").strip()
         if not validate_qris(static_payload):
             await interaction.followup.send(embed=discord.Embed(title="❌ Payload tidak valid", description="Pastikan payload dimulai `000201`, mengandung `5802ID`, dan merupakan QRIS statis (`010211`).", color=0xE74C3C), ephemeral=True)
             return
-        set_guild_config(interaction.guild.id, static_payload, merchant_name)
+        detected_name = parse_merchant_name_from_qris_payload(static_payload)
+        effective_merchant = (merchant_name or "").strip() or detected_name or "Merchant"
+        set_guild_config(interaction.guild.id, static_payload, effective_merchant)
         fee_status = "✅ Aktif untuk semua nominal (+0.5%)"
         embed = discord.Embed(title="✅ QRIS berhasil dikonfigurasi!", color=0x2ECC71)
-        embed.add_field(name="Merchant", value=merchant_name, inline=False)
+        embed.add_field(name="Merchant", value=effective_merchant, inline=False)
         embed.add_field(name="Payload (preview)", value=f"`{static_payload[:50]}...`", inline=False)
         embed.add_field(name="Biaya Admin", value=fee_status, inline=False)
         embed.add_field(name="Test sekarang", value="`/qris amount:10000`", inline=False)
@@ -1253,12 +1276,19 @@ def register_slash_commands(bot):
 
         guild_config = get_guild_config(interaction.guild.id) if interaction.guild else None
         total_price = int(order_data.get("total_price", 0) or 0)
-        has_order_qris = bool(guild_config and guild_config.get("static_qris") and guild_config.get("merchant_name"))
+        has_order_qris = bool(guild_config and guild_config.get("static_qris"))
         if has_order_qris and total_price > 0:
+            merchant_name = (
+                guild_config.get("merchant_name")
+                or parse_merchant_name_from_qris_payload(guild_config.get("static_qris", ""))
+                or "Merchant"
+            )
             try:
-                qris_total = apply_admin_fee(total_price)
-                qris_payload = make_dynamic_qris(guild_config["static_qris"], qris_total)
-                qris_image = generate_qris_image(qris_payload, qris_total, guild_config["merchant_name"], original_amount=total_price)
+                qris_total = calculate_qris_total_with_admin_fee(total_price)
+                qris_payload = build_dynamic_qris_payload(guild_config["static_qris"], total_price)
+                if not qris_payload:
+                    raise ValueError("Format payload QRIS tidak valid.")
+                qris_image = generate_qris_image(qris_payload, qris_total, merchant_name, original_amount=total_price)
                 qris_file = discord.File(qris_image, filename="order_qris.png")
                 embed.set_image(url="attachment://order_qris.png")
                 embed.add_field(name="QRIS Total", value=format_rupiah(qris_total), inline=True)

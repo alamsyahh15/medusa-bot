@@ -4,7 +4,7 @@ import json
 import math
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Union
 
 import aiohttp
 import discord
@@ -35,39 +35,147 @@ from .config import (
 )
 
 
-def crc16(data: str) -> str:
+def crc16_ccitt_false(input_str: str) -> int:
     crc = 0xFFFF
-    for char in data:
-        crc ^= ord(char) << 8
+    for ch in input_str:
+        crc ^= ord(ch) << 8
         for _ in range(8):
-            crc = (crc << 1) ^ 0x1021 if crc & 0x8000 else crc << 1
-            crc &= 0xFFFF
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) != 0 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def pad2(n: int) -> str:
+    return str(n).zfill(2)
+
+
+def crc16_hex(input_str: str) -> str:
+    crc = crc16_ccitt_false(input_str)
     return format(crc, "04X")
 
 
-def validate_qris(payload: str) -> bool:
-    return (
-        payload.startswith("000201")
-        and "5802ID" in payload
-        and len(payload) > 50
-        and ("010211" in payload or "010212" in payload)
-    )
+# Keep crc16 for backwards compatibility
+crc16 = crc16_hex
+
+
+def parse_merchant_name_from_qris_payload(qris_data: str) -> Optional[str]:
+    clean = str(qris_data or "").replace("\r", "").replace("\n", "").strip()
+    if not clean:
+        return None
+
+    # Sequential TLV parse first for accurate Tag 59 extraction
+    idx = 0
+    while idx + 4 <= len(clean):
+        tag = clean[idx : idx + 2]
+        try:
+            length = int(clean[idx + 2 : idx + 4])
+        except ValueError:
+            break
+        val_start = idx + 4
+        val_end = val_start + length
+        if val_end > len(clean):
+            break
+        if tag == "59":
+            name = clean[val_start:val_end].strip()
+            if name:
+                return name
+        idx = val_end
+
+    # Fallback to direct substring search matching TS logic
+    tag = "59"
+    tag_index = clean.find(tag)
+    if tag_index == -1:
+        return None
+
+    length_index = tag_index + len(tag)
+    length_str = clean[length_index : length_index + 2]
+    try:
+        length = int(length_str)
+    except ValueError:
+        return None
+    if length <= 0:
+        return None
+
+    value_index = length_index + 2
+    merchant_name = clean[value_index : value_index + length]
+    name = merchant_name.strip()
+    return name if name else None
+
+
+def calculate_qris_admin_fee(nominal: Union[int, float]) -> int:
+    try:
+        base_amount = max(0, round(float(nominal or 0)))
+    except (ValueError, TypeError):
+        base_amount = 0
+    if not base_amount:
+        return 0
+    return math.ceil(base_amount * 0.005)
+
+
+def calculate_qris_total_with_admin_fee(nominal: Union[int, float]) -> int:
+    try:
+        base_amount = max(0, round(float(nominal or 0)))
+    except (ValueError, TypeError):
+        base_amount = 0
+    if not base_amount:
+        return 0
+    return base_amount + calculate_qris_admin_fee(base_amount)
 
 
 def apply_admin_fee(amount: int) -> int:
-    fee_amount = math.ceil(amount * ADMIN_FEE_RATE)
-    return amount + fee_amount
+    return calculate_qris_total_with_admin_fee(amount)
+
+
+def build_dynamic_qris_payload(static_payload: str, nominal: Union[int, float]) -> Optional[str]:
+    clean = str(static_payload or "").replace("\r", "").replace("\n", "").strip()
+    if not clean:
+        return None
+
+    amount = calculate_qris_total_with_admin_fee(nominal)
+    if not amount:
+        return None
+
+    if len(clean) < 8:
+        return None
+
+    # Keep POI static (010211). Acquirers like ShopeePay validate POI=12 (dynamic) QRs
+    # against a server-registered reference (Tag 62.05); a client-built dynamic QR has none
+    # and gets rejected as "expired". Static QR + Tag 54 pre-fills the amount without that lookup.
+    qris_without_crc = clean[:-4]
+
+    parts = qris_without_crc.split("5802ID")
+    if len(parts) != 2:
+        return None
+
+    amount_str = f"{amount}.00"
+    amount_tag = f"54{pad2(len(amount_str))}{amount_str}"
+
+    payload = f"{parts[0]}{amount_tag}5802ID{parts[1]}"
+    final_crc = crc16_hex(payload)
+    return f"{payload}{final_crc}"
 
 
 def make_dynamic_qris(static: str, amount: int) -> str:
-    payload = static.replace("010211", "010212")[:-4]
-    amount_str = str(amount)
-    amount_field = f"54{len(amount_str):02d}{amount_str}"
-    insert_at = payload.find("5802ID")
-    if insert_at == -1:
+    clean = str(static or "").replace("\r", "").replace("\n", "").strip()
+    if len(clean) < 8:
+        raise ValueError("Payload QRIS terlalu pendek")
+    qris_without_crc = clean[:-4]
+    parts = qris_without_crc.split("5802ID")
+    if len(parts) != 2:
         raise ValueError("Format payload QRIS tidak dikenali")
-    payload = payload[:insert_at] + amount_field + payload[insert_at:]
-    return payload + crc16(payload)
+    amount_str = f"{amount}.00"
+    amount_tag = f"54{len(amount_str):02d}{amount_str}"
+    payload = f"{parts[0]}{amount_tag}5802ID{parts[1]}"
+    return payload + crc16_hex(payload)
+
+
+def validate_qris(payload: str) -> bool:
+    clean = str(payload or "").replace("\r", "").replace("\n", "").strip()
+    return (
+        clean.startswith("000201")
+        and "5802ID" in clean
+        and len(clean) > 50
+        and ("010211" in clean or "010212" in clean)
+    )
 
 
 def format_rupiah(amount: int) -> str:
