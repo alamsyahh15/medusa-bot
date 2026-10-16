@@ -191,6 +191,24 @@ def get_rating_log_config(guild_id: int) -> Optional[dict]:
     return {"channel_id": channel_id}
 
 
+def get_all_rating_log_configs() -> list:
+    config = load_config()
+    results = []
+    for guild_key, cfg in config.items():
+        if str(guild_key).startswith("__") or not isinstance(cfg, dict):
+            continue
+        channel_id = cfg.get("rating_log_channel_id")
+        if channel_id:
+            try:
+                results.append({
+                    "guild_id": int(guild_key),
+                    "channel_id": int(channel_id),
+                })
+            except (ValueError, TypeError):
+                continue
+    return results
+
+
 def set_order_role_config(guild_id: int, role_ids):
     config = load_config()
     guild_key = str(guild_id)

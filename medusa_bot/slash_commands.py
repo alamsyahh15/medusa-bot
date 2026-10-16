@@ -737,7 +737,7 @@ def register_slash_commands(bot):
         embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
         embed.add_field(name="Apps > Upload Payment", value="Klik kanan message bukti bayar lalu isi `order_number` di popup modal.", inline=False)
         embed.add_field(name="/ratingsetup 🔒", value="Set atau hapus channel log review/rating.", inline=False)
-        embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya tombol untuk buka form review.", inline=False)
+        embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya dropdown untuk ulasan bintang 1-5.", inline=False)
         embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
         embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
         embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini. (Admin only)", inline=False)
@@ -1347,10 +1347,10 @@ def register_slash_commands(bot):
         set_rating_log_config(interaction.guild.id, target_channel.id)
         embed = discord.Embed(title="✅ Channel log rating berhasil diset", color=0x2ECC71)
         embed.add_field(name="Channel", value=target_channel.mention, inline=False)
-        embed.add_field(name="Kegunaan", value="Semua form rating yang dikirim user akan masuk ke channel ini.", inline=False)
+        embed.add_field(name="Kegunaan", value="Channel ini akan menerima ulasan/rating pelanggan (termasuk broadcast antar-server yang terintegrasi).", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="rating", description="Kirim pesan rating dengan tombol review")
+    @bot.tree.command(name="rating", description="Kirim pesan rating dengan dropdown ulasan bintang 1-5")
     @app_commands.default_permissions(administrator=True)
     async def rating_command(interaction: discord.Interaction):
         rating_cfg = get_rating_log_config(interaction.guild.id)
@@ -1358,10 +1358,14 @@ def register_slash_commands(bot):
             await interaction.response.send_message("❌ Channel log rating belum diset. Gunakan `/ratingsetup` dulu.", ephemeral=True)
             return
 
-        embed = discord.Embed(title="⭐ Beri Rating", description="Klik tombol di bawah untuk isi form rating skala **1 sampai 5** dan comment opsional.", color=0x1A1F5E)
-        embed.add_field(name="Yang Diisi", value="`Rating 1-5`\n`Comment` opsional", inline=False)
-        embed.add_field(name="Tujuan", value="Hasil review akan otomatis dikirim ke channel log rating server ini.", inline=False)
-        embed.set_footer(text="Gunakan tombol di bawah untuk membuka form rating.")
+        embed = discord.Embed(
+            title="⭐ Beri Rating & Ulasan",
+            description="Pilih rating bintang pada menu dropdown di bawah untuk memberikan penilaian skala **1 sampai 5** beserta ulasan kamu.",
+            color=0x1A1F5E,
+        )
+        embed.add_field(name="Cara Memberi Rating", value="1. Pilih rating `Bintang 1 - 5` pada menu dropdown di bawah\n2. Tulis komentar / review pada dialog pop-up yang muncul\n3. Kirim ulasan kamu", inline=False)
+        embed.add_field(name="Tujuan", value="Hasil review akan otomatis dikirim ke channel log rating server ini dan seluruh server terintegrasi.", inline=False)
+        embed.set_footer(text="Pilih salah satu bintang pada dropdown di bawah untuk memulai.")
         await interaction.response.send_message(embed=embed, view=RatingRequestView())
 
     @bot.tree.command(name="setrole", description="Atur role yang boleh memakai /order dan upload payment")
