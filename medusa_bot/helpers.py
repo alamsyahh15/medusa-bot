@@ -956,7 +956,7 @@ def generate_qris_image(payload: str, amount: int, merchant_name: str, original_
     footer_y = qr_y + qr_size + 14
     if has_fee:
         fee_amount = amount - original_amount
-        center_text(f"Subtotal: {format_rupiah(original_amount)}  |  Biaya admin (0.5%): {format_rupiah(fee_amount)}", _load_font(12), footer_y, (100, 100, 100))
+        center_text(f"Subtotal: {format_rupiah(original_amount)}  |  Biaya admin (0.7%): {format_rupiah(fee_amount)}", _load_font(12), footer_y, (100, 100, 100))
         center_text("E-Wallet transaction cannot be refunded", _load_font(13), footer_y + 18, (120, 120, 120))
         center_text("Code by MedusaBlox", _load_font(13), footer_y + 36, (120, 120, 120))
     else:

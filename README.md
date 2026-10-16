@@ -66,7 +66,7 @@ Scan QR statis merchant menggunakan QR scanner yang menampilkan teks hasil scan,
 Semua nominal dikenakan biaya admin **0,5%**.
 
 Formula:
-`total = nominal + ceil(nominal * 0.005)`
+`total = nominal + ceil(nominal * 0.007)`
 
 Contoh:
 

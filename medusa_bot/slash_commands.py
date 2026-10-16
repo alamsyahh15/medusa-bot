@@ -370,7 +370,7 @@ class MarketplaceOrderModal(discord.ui.Modal, title="Form Order Merchant"):
         embed.add_field(name="Customer Name", value=cust_name, inline=True)
         embed.add_field(name="Product Name", value=self.product_name, inline=True)
         embed.add_field(name="Subtotal", value=format_rupiah(original_amount), inline=True)
-        embed.add_field(name="Biaya Admin (0.5%)", value=format_rupiah(fee_amount), inline=True)
+        embed.add_field(name="Biaya Admin (0.7%)", value=format_rupiah(fee_amount), inline=True)
         embed.add_field(name="Total Bayar", value=format_rupiah(final_amount), inline=True)
 
         file = None
@@ -663,7 +663,7 @@ def register_slash_commands(bot):
 
         desc = (
             f"Subtotal: **{format_rupiah(original_amount)}**\n"
-            f"Biaya admin (0.5%): **{format_rupiah(fee_amount)}**\n"
+            f"Biaya admin (0.7%): **{format_rupiah(fee_amount)}**\n"
             f"Total bayar: **{format_rupiah(final_amount)}**"
         )
         file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
@@ -714,7 +714,7 @@ def register_slash_commands(bot):
         detected_name = parse_merchant_name_from_qris_payload(static_payload)
         effective_merchant = (merchant_name or "").strip() or detected_name or "Merchant"
         set_guild_config(interaction.guild.id, static_payload, effective_merchant)
-        fee_status = "✅ Aktif untuk semua nominal (+0.5%)"
+        fee_status = "✅ Aktif untuk semua nominal (+0.7%)"
         embed = discord.Embed(title="✅ QRIS berhasil dikonfigurasi!", color=0x2ECC71)
         embed.add_field(name="Merchant", value=effective_merchant, inline=False)
         embed.add_field(name="Payload (preview)", value=f"`{static_payload[:50]}...`", inline=False)
@@ -728,7 +728,7 @@ def register_slash_commands(bot):
         if not cfg or not cfg.get("static_qris") or not cfg.get("merchant_name"):
             await interaction.response.send_message(embed=discord.Embed(title="⚙️ Belum ada konfigurasi QRIS", description="Admin gunakan `/qrissetup`.", color=0xE67E22), ephemeral=True)
             return
-        fee_status = "✅ Aktif untuk semua nominal (+0.5%)"
+        fee_status = "✅ Aktif untuk semua nominal (+0.7%)"
         allowed_roles = get_order_roles(interaction.guild)
         allowed_role_text = ", ".join(role.mention for role in allowed_roles) if allowed_roles else "Semua member"
         embed = discord.Embed(title="📋 Konfigurasi QRIS Server", color=0x1A1F5E)

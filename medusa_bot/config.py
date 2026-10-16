@@ -5,7 +5,7 @@ from typing import Optional
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 CONFIG_FILE = "config.json"
-ADMIN_FEE_RATE = 0.005
+ADMIN_FEE_RATE = 0.007
 LEADERBOARD_API = "https://medusablox.com/api/roblox/external/leaderboard"
 COMMISSION_API = os.getenv(
     "COMMISSION_API",
