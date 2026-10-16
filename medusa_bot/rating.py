@@ -23,13 +23,15 @@ class RatingModal(discord.ui.Modal):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
         if not interaction.guild:
-            await interaction.response.send_message("❌ Rating hanya bisa dikirim dari dalam server.", ephemeral=True)
+            await interaction.followup.send("❌ Rating hanya bisa dikirim dari dalam server.", ephemeral=True)
             return
 
         rating_value = self.rating_value
         if rating_value < 1 or rating_value > 5:
-            await interaction.response.send_message("❌ Rating tidak valid (harus 1 sampai 5).", ephemeral=True)
+            await interaction.followup.send("❌ Rating tidak valid (harus 1 sampai 5).", ephemeral=True)
             return
 
         all_targets = get_all_rating_log_configs()
@@ -41,7 +43,7 @@ class RatingModal(discord.ui.Modal):
             })
 
         if not all_targets:
-            await interaction.response.send_message("❌ Channel log rating belum diset di server manapun. Gunakan `/ratingsetup` dulu.", ephemeral=True)
+            await interaction.followup.send("❌ Channel log rating belum diset di server manapun. Gunakan `/ratingsetup` dulu.", ephemeral=True)
             return
 
         comment_text = (self.comment.value or "").strip()
@@ -77,16 +79,24 @@ class RatingModal(discord.ui.Modal):
 
         sent_count = 0
         for target in all_targets:
-            target_guild = interaction.client.get_guild(target["guild_id"])
             ch_id = target["channel_id"]
+            target_guild = interaction.client.get_guild(target["guild_id"])
             target_ch = None
             if target_guild:
                 target_ch = target_guild.get_channel(ch_id)
             if not target_ch:
                 target_ch = interaction.client.get_channel(ch_id)
+            if not target_ch:
+                try:
+                    target_ch = await interaction.client.fetch_channel(ch_id)
+                except Exception:
+                    target_ch = None
 
             if isinstance(target_ch, discord.TextChannel):
-                perms = target_ch.permissions_for(target_ch.guild.me)
+                guild_me = target_ch.guild.me or target_ch.guild.get_member(interaction.client.user.id)
+                if not guild_me:
+                    continue
+                perms = target_ch.permissions_for(guild_me)
                 if perms.view_channel and perms.send_messages and perms.embed_links:
                     try:
                         sent_msg = await target_ch.send(embed=embed)
@@ -102,7 +112,7 @@ class RatingModal(discord.ui.Modal):
                     log_debug("rating.broadcast_missing_perms", channel=ch_id, guild=target["guild_id"])
 
         if sent_count == 0:
-            await interaction.response.send_message("❌ Gagal mengirim ulasan ke channel log rating.", ephemeral=True)
+            await interaction.followup.send("❌ Gagal mengirim ulasan ke channel log rating. Pastikan bot memiliki izin di channel tujuan.", ephemeral=True)
             return
 
         log_debug(
@@ -133,30 +143,27 @@ class RatingModal(discord.ui.Modal):
         thank_you_embed.timestamp = now_utc
 
         target_message = self.original_message or interaction.message
-        edited_original = False
-
-        try:
-            await interaction.response.edit_message(content=None, embed=thank_you_embed, view=None)
-            edited_original = True
-        except Exception as e:
-            log_debug("rating.edit_message_exception", error=str(e))
-
-        if not interaction.response.is_done():
-            await interaction.response.send_message("✅ Rating berhasil dikirim. Terima kasih!", ephemeral=True)
-        else:
-            try:
-                await interaction.followup.send("✅ Rating berhasil dikirim. Terima kasih!", ephemeral=True)
-            except Exception:
-                pass
-
-        if not edited_original and target_message:
+        if target_message:
             try:
                 await target_message.edit(content=None, embed=thank_you_embed, view=None)
-            except Exception:
+            except Exception as e:
+                log_debug("rating.edit_message_exception", error=str(e))
                 try:
                     await target_message.delete()
                 except Exception:
                     pass
+
+        await interaction.followup.send("✅ Rating berhasil dikirim. Terima kasih!", ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log_debug("rating.modal_error", error=str(error), user=getattr(interaction.user, "id", None))
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Terjadi kesalahan saat memproses rating. Silakan coba lagi.", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Terjadi kesalahan saat memproses rating. Silakan coba lagi.", ephemeral=True)
+        except Exception:
+            pass
 
 
 RatingCommentModal = RatingModal
