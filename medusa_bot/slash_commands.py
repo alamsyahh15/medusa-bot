@@ -611,25 +611,126 @@ class CheckPaginationView(discord.ui.View):
 from .stock import register_stock_commands
 
 
+class QRISRegionSelect(discord.ui.Select):
+    def __init__(self, has_foreigner: bool = True):
+        options = [
+            discord.SelectOption(
+                label="Indonesia",
+                value="indonesia",
+                emoji="🇮🇩",
+                description="QRIS Domestik (BCA, ShopeePay, Dana, GoPay, OVO, dll.)",
+            ),
+            discord.SelectOption(
+                label="Luar Negeri",
+                value="luar_negeri",
+                emoji="🌐",
+                description="QRIS Luar Negeri (Cross-Border)" if has_foreigner else "Belum disetup di server ini",
+            ),
+        ]
+        super().__init__(
+            placeholder="Pilih region pembayaran QRIS...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.handle_region_selection(interaction, self.values[0])
+
+
+class QRISRegionSelectView(discord.ui.View):
+    def __init__(self, author_id: int, amount: int, guild_id: int, has_foreigner: bool = True):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.amount = amount
+        self.guild_id = guild_id
+        self.message: Optional[discord.Message] = None
+        self.select_menu = QRISRegionSelect(has_foreigner=has_foreigner)
+        self.add_item(self.select_menu)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ Hanya yang menjalankan command yang bisa memilih region pembayaran.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        try:
+            for item in self.children:
+                item.disabled = True
+            if self.message:
+                await self.message.edit(view=self)
+        except Exception:
+            pass
+
+    async def handle_region_selection(self, interaction: discord.Interaction, selected_region: str):
+        guild_config = get_guild_config(self.guild_id)
+        if not guild_config or not guild_config.get("static_qris"):
+            await interaction.response.send_message("❌ Konfigurasi QRIS server tidak ditemukan.", ephemeral=True)
+            return
+
+        if selected_region == "luar_negeri":
+            target_payload = guild_config.get("foreigner_static_qris")
+            if not target_payload:
+                await interaction.response.send_message(
+                    "❌ QRIS Luar Negeri (Foreigner) belum dikonfigurasi di server ini. Admin dapat menyetelnya via `/qrissetup`.",
+                    ephemeral=True,
+                )
+                return
+            region_name = "Luar Negeri"
+        else:
+            target_payload = guild_config.get("static_qris")
+            region_name = "Indonesia"
+
+        merchant_name = (
+            guild_config.get("merchant_name")
+            or parse_merchant_name_from_qris_payload(target_payload)
+            or "Merchant"
+        )
+
+        original_amount = self.amount
+        fee_amount = calculate_qris_admin_fee(original_amount)
+        final_amount = calculate_qris_total_with_admin_fee(original_amount)
+
+        await interaction.response.defer()
+        try:
+            payload = build_dynamic_qris_payload(target_payload, original_amount)
+            if not payload:
+                raise ValueError("Format payload QRIS tidak valid atau gagal diproses.")
+            image_bytes = generate_qris_image(
+                payload,
+                final_amount,
+                merchant_name,
+                original_amount=original_amount,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal generate QR: {e}", ephemeral=True)
+            return
+
+        desc = (
+            f"Metode: **{region_name}**\n"
+            f"Subtotal: **{format_rupiah(original_amount)}**\n"
+            f"Biaya admin (0.7%): **{format_rupiah(fee_amount)}**\n"
+            f"Total bayar: **{format_rupiah(final_amount)}**"
+        )
+        file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
+        embed = discord.Embed(title=f"💳 QRIS Payment ({region_name})", description=desc, color=0x1A1F5E)
+        embed.set_image(url=f"attachment://qris_{final_amount}.png")
+        embed.set_footer(text=f"E-Wallet transaction cannot be refunded • {merchant_name}")
+
+        self.stop()
+        await interaction.edit_original_response(embed=embed, attachments=[file], view=None)
+
+
 def register_slash_commands(bot):
     register_stock_commands(bot)
 
     @bot.tree.command(name="qris", description="Generate QRIS dinamis")
-    @app_commands.describe(
-        amount="Nominal IDR, contoh 26000",
-        region="Pilih metode: Indonesia atau Luar Negeri (default: Indonesia)",
-    )
-    @app_commands.choices(
-        region=[
-            app_commands.Choice(name="Indonesia", value="indonesia"),
-            app_commands.Choice(name="Luar Negeri", value="luar_negeri"),
-        ]
-    )
-    async def qris_generate(
-        interaction: discord.Interaction,
-        amount: int,
-        region: Optional[app_commands.Choice[str]] = None,
-    ):
+    @app_commands.describe(amount="Nominal IDR, contoh 26000")
+    async def qris_generate(interaction: discord.Interaction, amount: int):
         guild_config = get_guild_config(interaction.guild.id)
         static_qris = guild_config.get("static_qris") if guild_config else None
         if not guild_config or not static_qris:
@@ -643,30 +744,6 @@ def register_slash_commands(bot):
             )
             return
 
-        selected_region = region.value if region else "indonesia"
-        if selected_region == "luar_negeri":
-            target_payload = guild_config.get("foreigner_static_qris")
-            if not target_payload:
-                await interaction.response.send_message(
-                    embed=discord.Embed(
-                        title="⚙️ QRIS Luar Negeri belum dikonfigurasi",
-                        description="QRIS Luar Negeri (Foreigner) belum diatur di server ini.\nAdmin dapat menyetelnya via `/qrissetup`.",
-                        color=0xE67E22,
-                    ),
-                    ephemeral=True,
-                )
-                return
-            region_name = "Luar Negeri"
-        else:
-            target_payload = static_qris
-            region_name = "Indonesia"
-
-        merchant_name = (
-            guild_config.get("merchant_name")
-            or parse_merchant_name_from_qris_payload(target_payload)
-            or "Merchant"
-        )
-
         if amount <= 0:
             await interaction.response.send_message("❌ Nominal harus lebih dari 0.", ephemeral=True)
             return
@@ -674,35 +751,33 @@ def register_slash_commands(bot):
             await interaction.response.send_message("❌ Melebihi batas maksimum Rp 50.000.000.", ephemeral=True)
             return
 
-        original_amount = amount
-        fee_amount = calculate_qris_admin_fee(original_amount)
-        final_amount = calculate_qris_total_with_admin_fee(original_amount)
-        await interaction.response.defer(thinking=True)
-        try:
-            payload = build_dynamic_qris_payload(target_payload, original_amount)
-            if not payload:
-                raise ValueError("Format payload QRIS tidak valid atau gagal diproses.")
-            image_bytes = generate_qris_image(
-                payload,
-                final_amount,
-                merchant_name,
-                original_amount=original_amount,
-            )
-        except Exception as e:
-            await interaction.followup.send(f"❌ Gagal generate QR: {e}")
-            return
+        fee_amount = calculate_qris_admin_fee(amount)
+        final_amount = calculate_qris_total_with_admin_fee(amount)
 
-        desc = (
-            f"Metode: **{region_name}**\n"
-            f"Subtotal: **{format_rupiah(original_amount)}**\n"
-            f"Biaya admin (0.7%): **{format_rupiah(fee_amount)}**\n"
-            f"Total bayar: **{format_rupiah(final_amount)}**"
+        embed = discord.Embed(
+            title="💳 Pilih Region Pembayaran QRIS",
+            description=(
+                f"Subtotal: **{format_rupiah(amount)}**\n"
+                f"Biaya admin (0.7%): **{format_rupiah(fee_amount)}**\n"
+                f"Total bayar: **{format_rupiah(final_amount)}**\n\n"
+                "Silakan pilih metode/region pembayaran pada dropdown di bawah:"
+            ),
+            color=0x1A1F5E,
         )
-        file = discord.File(image_bytes, filename=f"qris_{final_amount}.png")
-        embed = discord.Embed(title=f"💳 QRIS Payment ({region_name})", description=desc, color=0x1A1F5E)
-        embed.set_image(url=f"attachment://qris_{final_amount}.png")
-        embed.set_footer(text=f"E-Wallet transaction cannot be refunded • {merchant_name}")
-        await interaction.followup.send(file=file, embed=embed)
+        embed.set_footer(text="Pilih region untuk memunculkan kode QRIS")
+
+        has_foreigner = bool(guild_config.get("foreigner_static_qris"))
+        view = QRISRegionSelectView(
+            author_id=interaction.user.id,
+            amount=amount,
+            guild_id=interaction.guild.id,
+            has_foreigner=has_foreigner,
+        )
+        await interaction.response.send_message(embed=embed, view=view)
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            pass
 
     @bot.tree.command(name="calc", description="Kalkulasi Robux dan IDR")
     @app_commands.describe(value="Contoh: 500, 15k, atau 100rb")

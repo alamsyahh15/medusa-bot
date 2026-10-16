@@ -16,7 +16,7 @@ Terms of Service:
 ### Semua member
 | Command | Contoh | Keterangan |
 |---|---|---|
-| `/qris amount [region]` | `/qris amount:26000 region:Indonesia` | Generate QRIS dinamis (Indonesia / Luar Negeri) |
+| `/qris amount` | `/qris amount:26000` | Generate QRIS dinamis (pilih region via dropdown) |
 | `/calc value` | `/calc value:500` | Kalkulasi Robux/IDR untuk semua metode |
 | `/check username_roblox` | `/check username_roblox:Sebas57chan` | Cek eligibility instant group |
 | `/commision username_roblox` | `/commision username_roblox:sebas57chan` | Cek rincian komisi member Roblox |
