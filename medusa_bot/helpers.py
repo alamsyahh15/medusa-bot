@@ -502,10 +502,10 @@ def build_calc_usage_embed() -> discord.Embed:
     embed.add_field(
         name="Rate",
         value=(
-            "`Instant Group` = Rp 145.000 / 1.000 Robux\n"
+            "`Instant Group` = Rp 147.000 / 1.000 Robux\n"
             "`Gamepass` = Rp 132.000 / 1.000 Robux\n"
             "`Gig` = Rp 115.000 / 1.000 Robux\n"
-            "`Send` = Rp 150.000 / 1.000 Robux"
+            "`Send` = Rp 152.000 / 1.000 Robux"
         ),
         inline=False,
     )
