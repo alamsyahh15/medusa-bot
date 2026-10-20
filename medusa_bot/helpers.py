@@ -1098,3 +1098,98 @@ async def fetch_user_commission(session: aiohttp.ClientSession, username_roblox:
         log_debug("fetch_user_commission.error", error=str(e), username=username_roblox)
         return {"success": False, "message": f"Gagal menghubungi server komisi: {e}"}
 
+
+def get_halloween_tier(pumpkins: int) -> tuple[str, str]:
+    """Mengembalikan gelar dan deskripsi bertema Halloween berdasarkan jumlah labu."""
+    if pumpkins >= 50:
+        return "👑🎃 Pumpkin Monarch", "Penguasa labu tertinggi di malam Halloween!"
+    elif pumpkins >= 30:
+        return "🧙 Witch Sorcerer", "Ahli sihir kegelapan dengan lumbung labu melimpah!"
+    elif pumpkins >= 15:
+        return "🦇 Vampire Lord", "Penguasa malam yang memikat banyak pengikut!"
+    elif pumpkins >= 5:
+        return "🍬 Trick or Treater", "Pengumpul permen dan labu yang gigih!"
+    elif pumpkins >= 1:
+        return "👻 Spooky Ghost", "Jiwa penasaran yang mulai menghantui server!"
+    else:
+        return "🕯️ Lost Soul", "Belum mengumpulkan labu. Yuk mulai undang temanmu!"
+
+
+def build_halloween_profile_embed(
+    guild: discord.Guild,
+    member: Union[discord.Member, discord.User],
+    total_invites: int,
+    active_invites: list,
+    rank: Optional[int],
+    total_inviters: int,
+) -> discord.Embed:
+    pumpkins = total_invites  # 1 invite = 1 pumpkin
+    tier_title, tier_desc = get_halloween_tier(pumpkins)
+
+    embed = discord.Embed(
+        title="🎃 Profil Event Halloween 🎃",
+        description=(
+            f"Statistik labu Halloween untuk {member.mention}!\n"
+            f"> 🎃 **1 Undangan = 1 Pumpkin**\n"
+            f"> *Kumpulkan Pumpkin sebanyak-banyaknya dengan mengundang teman ke server!*"
+        ),
+        color=0xFF7518,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    avatar_url = member.display_avatar.url if hasattr(member, "display_avatar") and member.display_avatar else None
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+
+    embed.add_field(
+        name="🎃 Perolehan Labu",
+        value=f"**{pumpkins:,}** Pumpkin",
+        inline=True,
+    )
+    embed.add_field(
+        name="📨 Total Undangan",
+        value=f"**{total_invites:,}** Orang",
+        inline=True,
+    )
+
+    if rank and total_invites > 0:
+        rank_display = f"**#{rank}** dari {total_inviters} pengundang"
+    else:
+        rank_display = "Belum masuk peringkat"
+
+    embed.add_field(
+        name="🏆 Peringkat Server",
+        value=rank_display,
+        inline=True,
+    )
+
+    embed.add_field(
+        name="🎖️ Gelar Halloween",
+        value=f"**{tier_title}**\n*{tier_desc}*",
+        inline=False,
+    )
+
+    if active_invites:
+        sorted_links = sorted(active_invites, key=lambda inv: inv.uses or 0, reverse=True)
+        links_preview = []
+        for inv in sorted_links[:3]:
+            links_preview.append(f"• [`discord.gg/{inv.code}`]({inv.url}) — **{inv.uses or 0}** invite")
+        if len(sorted_links) > 3:
+            links_preview.append(f"*...dan {len(sorted_links) - 3} link lainnya*")
+        embed.add_field(
+            name=f"🔗 Link Undangan Aktif ({len(active_invites)})",
+            value="\n".join(links_preview),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="🔗 Link Undangan",
+            value="Belum ada link undangan aktif yang dibuat. Buat invite baru untuk mulai mengumpulkan 🎃!",
+            inline=False,
+        )
+
+    guild_icon = guild.icon.url if guild.icon else None
+    embed.set_footer(text=f"Halloween Event • {guild.name}", icon_url=guild_icon)
+    return embed
+
+

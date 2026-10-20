@@ -37,6 +37,7 @@ from .helpers import (
     build_calc_result_embed,
     build_calc_usage_embed,
     build_dynamic_qris_payload,
+    build_halloween_profile_embed,
     build_roblox_group_share_url,
     calculate_qris_admin_fee,
     calculate_qris_total_with_admin_fee,
@@ -725,6 +726,87 @@ class QRISRegionSelectView(discord.ui.View):
         await interaction.edit_original_response(embed=embed, attachments=[file], view=None)
 
 
+class HalloweenProfileRefreshView(discord.ui.View):
+    def __init__(self, target_member: discord.Member, author_id: int):
+        super().__init__(timeout=180)
+        self.target_member = target_member
+        self.author_id = author_id
+        self.message: Optional[discord.Message] = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ Hanya orang yang menjalankan perintah ini yang dapat menekan tombol Refresh.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        try:
+            for item in self.children:
+                item.disabled = True
+            if self.message:
+                await self.message.edit(view=self)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary)
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Hanya dapat digunakan di server.", ephemeral=True)
+            return
+
+        bot_member = interaction.guild.me or interaction.guild.get_member(interaction.client.user.id)
+        if not bot_member or not bot_member.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "❌ Bot memerlukan izin **Manage Server** (`Kelola Server`) untuk membaca data undangan.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        try:
+            invites = await interaction.guild.invites()
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Bot tidak memiliki izin Manage Server untuk membaca data undangan.",
+                ephemeral=True,
+            )
+            return
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal memperbarui data: {e}", ephemeral=True)
+            return
+
+        target_invites = [inv for inv in invites if inv.inviter and inv.inviter.id == self.target_member.id]
+        total_invites = sum(inv.uses or 0 for inv in target_invites)
+
+        inviter_totals: dict[int, int] = {}
+        for inv in invites:
+            if inv.inviter:
+                inviter_totals[inv.inviter.id] = inviter_totals.get(inv.inviter.id, 0) + (inv.uses or 0)
+
+        active_inviters = {uid: count for uid, count in inviter_totals.items() if count > 0}
+        sorted_inviters = sorted(active_inviters.items(), key=lambda item: item[1], reverse=True)
+
+        rank = None
+        for idx, (inviter_id, _) in enumerate(sorted_inviters, start=1):
+            if inviter_id == self.target_member.id:
+                rank = idx
+                break
+
+        embed = build_halloween_profile_embed(
+            guild=interaction.guild,
+            member=self.target_member,
+            total_invites=total_invites,
+            active_invites=target_invites,
+            rank=rank,
+            total_inviters=len(sorted_inviters),
+        )
+
+        await interaction.edit_original_response(embed=embed, view=self)
+
+
 def register_slash_commands(bot):
     register_stock_commands(bot)
 
@@ -904,6 +986,7 @@ def register_slash_commands(bot):
         embed.add_field(name="/ratingsetup 🔒", value="Set atau hapus channel log review/rating.", inline=False)
         embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya dropdown untuk ulasan bintang 1-5.", inline=False)
         embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
+        embed.add_field(name="/profile 🎃", value="Cek profil Halloween dan total perolehan Pumpkin dari invite server kamu.", inline=False)
         embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
         embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini (Payload Indonesia & Luar Negeri). (Admin only)", inline=False)
         embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
@@ -1936,5 +2019,91 @@ def register_slash_commands(bot):
             color=0x8A2BE2,
         )
         await interaction.response.send_message(embed=info_embed, view=view, ephemeral=True)
+
+    @bot.tree.command(name="profile", description="Cek profil Halloween dan total perolehan Pumpkin dari invite server")
+    @app_commands.describe(user="Pilih member yang ingin dicek profilnya (opsional)")
+    async def profile_slash(interaction: discord.Interaction, user: Optional[discord.Member] = None):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ Perintah ini hanya dapat digunakan di dalam server Discord.",
+                ephemeral=True,
+            )
+            return
+
+        bot_member = interaction.guild.me or interaction.guild.get_member(bot.user.id)
+        if not bot_member or not bot_member.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="⚠️ Izin Bot Tidak Mencukupi",
+                    description=(
+                        "Bot memerlukan izin **Manage Server** (`Kelola Server`) untuk membaca data undangan dan menghitung 🎃 Pumpkin.\n\n"
+                        "**Solusi untuk Admin Server:**\n"
+                        "1. Buka **Server Settings** > **Roles**\n"
+                        "2. Berikan role bot izin **Manage Server** (Kelola Server)\n"
+                        "3. Jalankan kembali `/profile`"
+                    ),
+                    color=0xE74C3C,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+
+        target_member = user or interaction.user
+        if isinstance(target_member, discord.User) and interaction.guild:
+            resolved_member = interaction.guild.get_member(target_member.id)
+            if resolved_member:
+                target_member = resolved_member
+
+        try:
+            invites = await interaction.guild.invites()
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="⚠️ Izin Bot Tidak Mencukupi",
+                    description="Bot tidak memiliki izin untuk membaca data invite di server ini. Pastikan bot memiliki izin **Manage Server**.",
+                    color=0xE74C3C,
+                ),
+                ephemeral=True,
+            )
+            return
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Terjadi kesalahan saat membaca data invite: {e}",
+                ephemeral=True,
+            )
+            return
+
+        target_invites = [inv for inv in invites if inv.inviter and inv.inviter.id == target_member.id]
+        total_invites = sum(inv.uses or 0 for inv in target_invites)
+
+        inviter_totals: dict[int, int] = {}
+        for inv in invites:
+            if inv.inviter:
+                inviter_totals[inv.inviter.id] = inviter_totals.get(inv.inviter.id, 0) + (inv.uses or 0)
+
+        active_inviters = {uid: count for uid, count in inviter_totals.items() if count > 0}
+        sorted_inviters = sorted(active_inviters.items(), key=lambda item: item[1], reverse=True)
+
+        rank = None
+        for idx, (inviter_id, _) in enumerate(sorted_inviters, start=1):
+            if inviter_id == target_member.id:
+                rank = idx
+                break
+
+        embed = build_halloween_profile_embed(
+            guild=interaction.guild,
+            member=target_member,
+            total_invites=total_invites,
+            active_invites=target_invites,
+            rank=rank,
+            total_inviters=len(sorted_inviters),
+        )
+
+        view = HalloweenProfileRefreshView(target_member=target_member, author_id=interaction.user.id)
+        msg = await interaction.followup.send(embed=embed, view=view)
+        view.message = msg
+
 
 
