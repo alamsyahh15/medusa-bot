@@ -1035,7 +1035,7 @@ def generate_leaderboard_image(players: list) -> io.BytesIO:
     return buf
 
 
-async def fetch_and_render_leaderboard(session) -> Optional[io.BytesIO]:
+async def fetch_leaderboard_data(session) -> Optional[dict]:
     try:
         async with session.get(LEADERBOARD_API) as resp:
             if resp.status != 200:
@@ -1043,9 +1043,96 @@ async def fetch_and_render_leaderboard(session) -> Optional[io.BytesIO]:
             data = await resp.json()
         if not data.get("success") or not data.get("data"):
             return None
-        return generate_leaderboard_image(data["data"])
+        return data
     except Exception as e:
         print(f"[Leaderboard] Fetch error: {e}")
+        return None
+
+
+def build_leaderboard_embed(data: dict, guild: Optional[discord.Guild] = None, bot=None) -> discord.Embed:
+    guild_name = f" {guild.name}" if guild and guild.name else ""
+    title = f"🏆 Top 10 Spender Leaderboard{guild_name}".strip()
+    embed = discord.Embed(
+        title=title,
+        color=0xDE4397,
+    )
+
+    verified_badge = None
+    if guild:
+        for em in guild.emojis:
+            if any(k in em.name.lower() for k in ["verify", "verified", "centang", "badge", "check"]):
+                verified_badge = str(em)
+                break
+    if not verified_badge and bot:
+        for em in bot.emojis:
+            if any(k in em.name.lower() for k in ["verify", "verified", "centang", "badge", "check"]):
+                verified_badge = str(em)
+                break
+    if not verified_badge:
+        verified_badge = "☑️"
+
+    players = data.get("data", [])
+    entry_lines = []
+
+    for index, player in enumerate(players):
+        rank = player.get("rank", index + 1)
+        if rank == 1:
+            medal = "🥇"
+        elif rank == 2:
+            medal = "🥈"
+        elif rank == 3:
+            medal = "🥉"
+        else:
+            medal = "🏅"
+
+        username = str(player.get("username", "")).strip()
+        user_mention = None
+        if guild and username:
+            member = discord.utils.find(
+                lambda m: m.name.lower() == username.lower()
+                or m.display_name.lower() == username.lower()
+                or (getattr(m, "global_name", None) and m.global_name.lower() == username.lower()),
+                guild.members,
+            )
+            if member:
+                user_mention = member.mention
+
+        if not user_mention:
+            user_mention = f"@{username}" if username else "@Unknown"
+
+        total_nominal = player.get("total_nominal")
+        if total_nominal is None:
+            total_nominal = player.get("sum_nominal_transaksi", 0)
+        formatted_spend = format_rupiah(int(total_nominal))
+
+        total_transaksi = player.get("total_transaksi")
+        if total_transaksi is None:
+            total_transaksi = player.get("sum_total_transaksi", 0)
+        formatted_order = f"{int(total_transaksi)}x"
+
+        block = (
+            f"{medal} **Top {rank}.** {user_mention} {verified_badge}\n"
+            f"💵 **Total Spend:** {formatted_spend}\n"
+            f"🛒 **Total Order:** {formatted_order}"
+        )
+        entry_lines.append(block)
+
+    if not entry_lines:
+        embed.description = "---\n\n*Belum ada data transaksi.*"
+    else:
+        embed.description = "---\n\n" + "\n\n".join(entry_lines)
+
+    return embed
+
+
+async def fetch_and_render_leaderboard(session) -> Optional[io.BytesIO]:
+    data = await fetch_leaderboard_data(session)
+    if not data:
+        return None
+    try:
+        return generate_leaderboard_image(data["data"])
+    except Exception as e:
+        print(f"[Leaderboard] Render image error: {e}")
         return None
 
 
@@ -1056,22 +1143,22 @@ async def post_or_edit_leaderboard(bot, guild_id: int, get_leaderboard_config, s
     channel = bot.get_channel(lb_cfg["channel_id"])
     if not channel:
         return
-    image_bytes = await fetch_and_render_leaderboard(bot.http_session)
-    if not image_bytes:
+    guild = bot.get_guild(guild_id)
+    data = await fetch_leaderboard_data(bot.http_session)
+    if not data:
         return
+    embed = build_leaderboard_embed(data, guild=guild, bot=bot)
     if lb_cfg.get("message_id"):
         try:
             msg = await channel.fetch_message(lb_cfg["message_id"])
-            image_bytes2 = await fetch_and_render_leaderboard(bot.http_session)
-            await msg.edit(attachments=[discord.File(image_bytes2, filename="leaderboard.png")])
+            await msg.edit(embed=embed, attachments=[])
             print(f"[Leaderboard] Edited — guild {guild_id}")
             return
         except discord.NotFound:
             pass
         except Exception as e:
             print(f"[Leaderboard] Edit error: {e}")
-    file = discord.File(image_bytes, filename="leaderboard.png")
-    msg = await channel.send(file=file)
+    msg = await channel.send(embed=embed)
     set_leaderboard_config(guild_id, lb_cfg["channel_id"], msg.id)
     print(f"[Leaderboard] Sent new — guild {guild_id}")
 

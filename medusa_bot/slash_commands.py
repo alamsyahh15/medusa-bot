@@ -38,12 +38,14 @@ from .helpers import (
     build_calc_usage_embed,
     build_dynamic_qris_payload,
     build_halloween_profile_embed,
+    build_leaderboard_embed,
     build_roblox_group_share_url,
     calculate_qris_admin_fee,
     calculate_qris_total_with_admin_fee,
     ensure_order_interaction_access,
     extract_ticket_identity,
     fetch_and_render_leaderboard,
+    fetch_leaderboard_data,
     fetch_user_commission,
     find_member_in_guild,
     format_datetime_gmt7,
@@ -985,7 +987,7 @@ def register_slash_commands(bot):
         embed.add_field(name="Apps > Upload Payment", value="Klik kanan message bukti bayar lalu isi `order_number` di popup modal.", inline=False)
         embed.add_field(name="/ratingsetup 🔒", value="Set atau hapus channel log review/rating.", inline=False)
         embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya dropdown untuk ulasan bintang 1-5.", inline=False)
-        embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 3.", inline=False)
+        embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 10 Spender.", inline=False)
         embed.add_field(name="/profile 🎃", value="Cek profil Halloween dan total perolehan Pumpkin dari invite server kamu.", inline=False)
         embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
         embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini (Payload Indonesia & Luar Negeri). (Admin only)", inline=False)
@@ -1268,14 +1270,15 @@ def register_slash_commands(bot):
     async def commision_slash(interaction: discord.Interaction, username_roblox: str):
         await _handle_commission(interaction, username_roblox)
 
-    @bot.tree.command(name="leaderboard", description="Tampilkan leaderboard Top 3")
+    @bot.tree.command(name="leaderboard", description="Tampilkan leaderboard Top 10 Spender")
     async def leaderboard_slash(interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
-        image_bytes = await fetch_and_render_leaderboard(bot.http_session)
-        if not image_bytes:
+        data = await fetch_leaderboard_data(bot.http_session)
+        if not data:
             await interaction.followup.send("❌ Gagal fetch data leaderboard.")
             return
-        await interaction.followup.send(file=discord.File(image_bytes, filename="leaderboard.png"))
+        embed = build_leaderboard_embed(data, guild=interaction.guild, bot=bot)
+        await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="giveaway", description="Cek kelolosan giveaway via input manual")
     @app_commands.describe(
@@ -1688,22 +1691,23 @@ def register_slash_commands(bot):
 
         await interaction.response.defer(ephemeral=True)
         permissions = target_channel.permissions_for(interaction.guild.me)
-        if not permissions.view_channel or not permissions.send_messages or not permissions.attach_files:
-            await interaction.followup.send(f"❌ Saya belum punya izin yang cukup di {target_channel.mention}. Pastikan ada izin `View Channel`, `Send Messages`, dan `Attach Files`.", ephemeral=True)
+        if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+            await interaction.followup.send(f"❌ Saya belum punya izin yang cukup di {target_channel.mention}. Pastikan ada izin `View Channel`, `Send Messages`, dan `Embed Links`.", ephemeral=True)
             return
 
         set_leaderboard_config(interaction.guild.id, target_channel.id, None)
-        image_bytes = await fetch_and_render_leaderboard(bot.http_session)
-        if not image_bytes:
+        data = await fetch_leaderboard_data(bot.http_session)
+        if not data:
             await interaction.followup.send("❌ Gagal fetch data. Channel disimpan, akan dicoba lagi 5 menit.", ephemeral=True)
             return
-        msg = await target_channel.send(file=discord.File(image_bytes, filename="leaderboard.png"))
+        embed = build_leaderboard_embed(data, guild=interaction.guild, bot=bot)
+        msg = await target_channel.send(embed=embed)
         set_leaderboard_config(interaction.guild.id, target_channel.id, msg.id)
-        embed = discord.Embed(title="✅ Leaderboard channel berhasil diset!", color=0x2ECC71)
-        embed.add_field(name="Channel", value=target_channel.mention, inline=False)
-        embed.add_field(name="Auto-update", value="Setiap 5 menit", inline=False)
-        embed.add_field(name="Manual update", value="`/leaderboard-update`", inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        reply_embed = discord.Embed(title="✅ Leaderboard channel berhasil diset!", color=0x2ECC71)
+        reply_embed.add_field(name="Channel", value=target_channel.mention, inline=False)
+        reply_embed.add_field(name="Auto-update", value="Setiap 5 menit", inline=False)
+        reply_embed.add_field(name="Manual update", value="`/leaderboard-update`", inline=False)
+        await interaction.followup.send(embed=reply_embed, ephemeral=True)
 
     @bot.tree.command(name="leaderboard-update", description="Update leaderboard sekarang (Admin only)")
     @app_commands.default_permissions(administrator=True)
