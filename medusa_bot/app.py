@@ -2,7 +2,14 @@ import aiohttp
 import discord
 from discord.ext import commands
 
-from .config import DISCORD_TOKEN, ENABLE_MEMBERS_INTENT, HTTP_TIMEOUT_SECONDS, set_bot_meta_value, should_sync_slash_commands
+from .config import (
+    DISCORD_TOKEN,
+    ENABLE_MEMBERS_INTENT,
+    ENABLE_MESSAGE_CONTENT_INTENT,
+    HTTP_TIMEOUT_SECONDS,
+    set_bot_meta_value,
+    should_sync_slash_commands,
+)
 from .lifecycle import register_lifecycle
 from .rating import RatingRequestView
 from .stock import StockNotifView
@@ -10,13 +17,13 @@ from .slash_commands import register_slash_commands
 
 
 intents = discord.Intents.default()
-intents.message_content = False
+intents.message_content = ENABLE_MESSAGE_CONTENT_INTENT
 intents.members = ENABLE_MEMBERS_INTENT
 
 
 class QRISBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
+    def __init__(self, custom_intents: discord.Intents = None):
+        super().__init__(command_prefix="!", intents=custom_intents or intents)
         self.http_session: aiohttp.ClientSession = None
 
     async def setup_hook(self):
@@ -44,16 +51,28 @@ class QRISBot(commands.Bot):
         await super().close()
 
 
-def create_bot() -> QRISBot:
-    bot = QRISBot()
+def create_bot(custom_intents: discord.Intents = None) -> QRISBot:
+    bot = QRISBot(custom_intents=custom_intents)
     register_slash_commands(bot)
     register_lifecycle(bot)
     return bot
 
 
 def run_bot():
-    bot = create_bot()
     if not DISCORD_TOKEN:
         print("❌ DISCORD_TOKEN belum diset!")
-    else:
+        return
+
+    bot = create_bot()
+    try:
         bot.run(DISCORD_TOKEN)
+    except discord.PrivilegedIntentsRequired:
+        print(
+            "⚠️ Privileged Intent (Message Content / Server Members) belum diaktifkan di Discord Developer Portal! "
+            "Menjalankan ulang dengan fallback intent..."
+        )
+        fallback_intents = discord.Intents.default()
+        fallback_intents.message_content = False
+        fallback_intents.members = False
+        fallback_bot = create_bot(custom_intents=fallback_intents)
+        fallback_bot.run(DISCORD_TOKEN)

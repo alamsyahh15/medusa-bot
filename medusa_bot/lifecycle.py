@@ -1,7 +1,7 @@
 from discord.ext import tasks
 
 from .config import get_leaderboard_config, set_leaderboard_config
-from .helpers import post_or_edit_leaderboard
+from .helpers import handle_autodelete_message, post_or_edit_leaderboard
 
 
 def register_lifecycle(bot):
@@ -21,6 +21,14 @@ def register_lifecycle(bot):
         if not leaderboard_scheduler.is_running():
             leaderboard_scheduler.start()
             print("✅ Leaderboard scheduler dimulai")
+
+    @bot.listen("on_message")
+    async def on_message_autodelete(message):
+        await handle_autodelete_message(message)
+
+    @bot.listen("on_message_edit")
+    async def on_message_edit_autodelete(_before, after):
+        await handle_autodelete_message(after)
 
     return leaderboard_scheduler
 

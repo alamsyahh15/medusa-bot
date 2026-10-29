@@ -41,6 +41,7 @@ SLASH_SYNC_COOLDOWN_SECONDS = int(os.getenv("SLASH_SYNC_COOLDOWN_SECONDS", "900"
 FORCE_SLASH_SYNC = os.getenv("FORCE_SLASH_SYNC", "0") == "1"
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
 ENABLE_MEMBERS_INTENT = os.getenv("ENABLE_MEMBERS_INTENT", "0") == "1"
+ENABLE_MESSAGE_CONTENT_INTENT = os.getenv("ENABLE_MESSAGE_CONTENT_INTENT", "1") == "1"
 CALC_RATES = {
     "group": 147000,
     "gamepass": 132000,
@@ -244,6 +245,52 @@ def get_order_role_ids(guild_id: int):
     if legacy_role_id:
         return [int(legacy_role_id)]
     return []
+
+
+def get_autodelete_config(guild_id: int) -> dict:
+    cfg = load_config().get(str(guild_id), {})
+    enabled = bool(cfg.get("autodelete_url_enabled", False))
+    raw_roles = cfg.get("autodelete_whitelist_role_ids") or []
+    whitelist_role_ids = []
+    for role_id in raw_roles:
+        try:
+            rid = int(role_id)
+            if rid not in whitelist_role_ids:
+                whitelist_role_ids.append(rid)
+        except (ValueError, TypeError):
+            continue
+    return {
+        "enabled": enabled,
+        "whitelist_role_ids": whitelist_role_ids,
+    }
+
+
+def set_autodelete_config(guild_id: int, enabled: bool, whitelist_role_ids: Optional[list] = None) -> dict:
+    config = load_config()
+    guild_key = str(guild_id)
+    if guild_key not in config:
+        config[guild_key] = {}
+
+    normalized_role_ids = []
+    if whitelist_role_ids is None:
+        existing = config[guild_key].get("autodelete_whitelist_role_ids") or []
+        whitelist_role_ids = existing
+
+    for role_id in whitelist_role_ids or []:
+        try:
+            rid = int(role_id)
+            if rid not in normalized_role_ids:
+                normalized_role_ids.append(rid)
+        except (ValueError, TypeError):
+            continue
+
+    config[guild_key]["autodelete_url_enabled"] = bool(enabled)
+    config[guild_key]["autodelete_whitelist_role_ids"] = normalized_role_ids
+    save_config(config)
+    return {
+        "enabled": bool(enabled),
+        "whitelist_role_ids": normalized_role_ids,
+    }
 
 
 def load_merchant_config() -> dict:

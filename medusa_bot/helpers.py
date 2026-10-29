@@ -3,6 +3,7 @@ import io
 import json
 import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 
@@ -31,6 +32,7 @@ from .config import (
     ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API,
     ROBLOX_GROUP_IDS,
     ROBLOX_USER_LOOKUP_API,
+    get_autodelete_config,
     get_order_role_ids,
 )
 
@@ -1278,5 +1280,121 @@ def build_halloween_profile_embed(
     guild_icon = guild.icon.url if guild.icon else None
     embed.set_footer(text=f"Halloween Event • {guild.name}", icon_url=guild_icon)
     return embed
+
+
+AUTODELETE_URL_REGEX = re.compile(
+    r"(?i)(?:"
+    r"https?://\S+"
+    r"|\bwww\.[a-z0-9-]+(?:\.[a-z0-9-]+)+\b\S*"
+    r"|\bdiscord\.gg(?:/\S*)?"
+    r"|\b(?:discord(?:app)?\.com/invite|dsc\.gg)(?:/\S*)?"
+    r")"
+)
+
+
+def contains_autodelete_link(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    return bool(AUTODELETE_URL_REGEX.search(text))
+
+
+def get_autodelete_whitelist_roles(guild: Optional[discord.Guild]) -> list[discord.Role]:
+    if not guild:
+        return []
+    cfg = get_autodelete_config(guild.id)
+    roles = []
+    for role_id in cfg.get("whitelist_role_ids", []):
+        role = guild.get_role(role_id)
+        if role:
+            roles.append(role)
+    return roles
+
+
+def is_member_whitelisted_autodelete(
+    member: Union[discord.Member, discord.User, None],
+    guild: Optional[discord.Guild],
+) -> bool:
+    if not guild or not member:
+        return True
+    if getattr(member, "bot", False):
+        return True
+    if not isinstance(member, discord.Member):
+        member = guild.get_member(member.id)
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild_permissions.administrator:
+        return True
+    cfg = get_autodelete_config(guild.id)
+    whitelist_ids = set(cfg.get("whitelist_role_ids") or [])
+    if not whitelist_ids:
+        return False
+    member_role_ids = {role.id for role in getattr(member, "roles", [])}
+    return bool(member_role_ids.intersection(whitelist_ids))
+
+
+def message_has_autodelete_link(message: discord.Message) -> bool:
+    if contains_autodelete_link(getattr(message, "content", "")):
+        return True
+    for embed in getattr(message, "embeds", []) or []:
+        if contains_autodelete_link(getattr(embed, "url", None)):
+            return True
+        if contains_autodelete_link(getattr(embed, "title", None)):
+            return True
+        if contains_autodelete_link(getattr(embed, "description", None)):
+            return True
+    for snapshot in getattr(message, "message_snapshots", []) or []:
+        if contains_autodelete_link(getattr(snapshot, "content", "")):
+            return True
+        for embed in getattr(snapshot, "embeds", []) or []:
+            if contains_autodelete_link(getattr(embed, "url", None)):
+                return True
+            if contains_autodelete_link(getattr(embed, "description", None)):
+                return True
+    return False
+
+
+async def handle_autodelete_message(message: discord.Message) -> bool:
+    if not message or not message.guild or not message.author or message.author.bot:
+        return False
+
+    cfg = get_autodelete_config(message.guild.id)
+    if not cfg.get("enabled"):
+        return False
+
+    if is_member_whitelisted_autodelete(message.author, message.guild):
+        return False
+
+    if not message_has_autodelete_link(message):
+        return False
+
+    try:
+        await message.delete()
+        log_debug(
+            "autodelete.deleted",
+            guild=message.guild.id,
+            channel=message.channel.id,
+            author=message.author.id,
+        )
+        try:
+            await message.channel.send(
+                f"⚠️ {message.author.mention}, pengiriman link/URL atau `discord.gg` tidak diizinkan di server ini.",
+                delete_after=5,
+            )
+        except Exception:
+            pass
+        return True
+    except discord.Forbidden:
+        log_debug(
+            "autodelete.forbidden",
+            guild=message.guild.id,
+            channel=message.channel.id,
+            author=message.author.id,
+        )
+    except discord.NotFound:
+        pass
+    except Exception as e:
+        log_debug("autodelete.error", error=str(e))
+    return False
+
 
 

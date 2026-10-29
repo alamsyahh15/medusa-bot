@@ -17,6 +17,7 @@ from .config import (
     delete_merchant_product,
     delete_rating_log_config,
     get_all_product_names,
+    get_autodelete_config,
     get_guild_config,
     get_leaderboard_config,
     get_merchant,
@@ -26,6 +27,7 @@ from .config import (
     get_rating_log_config,
     has_qris_config,
     load_merchant_config,
+    set_autodelete_config,
     set_guild_config,
     set_leaderboard_config,
     set_merchant_config,
@@ -53,6 +55,7 @@ from .helpers import (
     format_roblox_join_date,
     format_rupiah,
     generate_qris_image,
+    get_autodelete_whitelist_roles,
     get_configured_roblox_group_ids,
     get_configured_roblox_groups,
     get_configured_reseller_groups,
@@ -990,6 +993,7 @@ def register_slash_commands(bot):
         embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 10 Spender.", inline=False)
         embed.add_field(name="/profile 🎃", value="Cek profil Halloween dan total perolehan Pumpkin dari invite server kamu.", inline=False)
         embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
+        embed.add_field(name="/setup-autodelete 🔒", value="Aktifkan/matikan auto-delete pesan yang mengandung URL & `discord.gg` serta atur role whitelist (`ignore_role`). (Admin only)", inline=False)
         embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini (Payload Indonesia & Luar Negeri). (Admin only)", inline=False)
         embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
         embed.add_field(name="/qrisreset 🔒", value="Hapus konfigurasi QRIS. (Admin only)", inline=False)
@@ -2108,6 +2112,131 @@ def register_slash_commands(bot):
         view = HalloweenProfileRefreshView(target_member=target_member, author_id=interaction.user.id)
         msg = await interaction.followup.send(embed=embed, view=view)
         view.message = msg
+
+    @bot.tree.command(
+        name="setup-autodelete",
+        description="Setup auto-delete pesan yang mengandung URL & discord.gg serta role whitelist (Admin only)",
+    )
+    @app_commands.describe(
+        ignore_role="Role whitelist yang diizinkan mengirim link/URL & discord.gg",
+        action="Pilih aksi: enable (default), disable, add_role, remove_role, clear_roles, atau info",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="enable (Aktifkan Auto-Delete)", value="enable"),
+            app_commands.Choice(name="disable (Matikan Auto-Delete)", value="disable"),
+            app_commands.Choice(name="add_role (Tambah Role Whitelist)", value="add_role"),
+            app_commands.Choice(name="remove_role (Hapus Role Whitelist)", value="remove_role"),
+            app_commands.Choice(name="clear_roles (Reset Semua Role Whitelist)", value="clear_roles"),
+            app_commands.Choice(name="info (Lihat Konfigurasi Saat Ini)", value="info"),
+        ]
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def setup_autodelete_slash(
+        interaction: discord.Interaction,
+        ignore_role: Optional[discord.Role] = None,
+        action: Optional[app_commands.Choice[str]] = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ Perintah ini hanya dapat digunakan di dalam server Discord.",
+                ephemeral=True,
+            )
+            return
+
+        action_val = action.value if action else "enable"
+        current_cfg = get_autodelete_config(interaction.guild.id)
+        enabled = current_cfg.get("enabled", False)
+        role_ids = list(current_cfg.get("whitelist_role_ids") or [])
+
+        if action_val in ("add_role", "remove_role") and ignore_role is None:
+            await interaction.response.send_message(
+                f"❌ Parameter `ignore_role` wajib dipilih untuk action `{action_val}`.",
+                ephemeral=True,
+            )
+            return
+
+        if action_val == "info":
+            note_text = "Menampilkan konfigurasi auto-delete saat ini."
+        elif action_val == "disable":
+            enabled = False
+            set_autodelete_config(interaction.guild.id, enabled=False, whitelist_role_ids=role_ids)
+            note_text = "Fitur auto-delete pesan URL & `discord.gg` telah **dinonaktifkan** untuk server ini."
+        elif action_val == "clear_roles":
+            role_ids = []
+            set_autodelete_config(interaction.guild.id, enabled=enabled, whitelist_role_ids=role_ids)
+            note_text = "Daftar role whitelist dikosongkan. Saat ini hanya **Administrator** yang dapat mengirim link."
+        elif action_val == "remove_role":
+            if ignore_role.id in role_ids:
+                role_ids = [rid for rid in role_ids if rid != ignore_role.id]
+                set_autodelete_config(interaction.guild.id, enabled=enabled, whitelist_role_ids=role_ids)
+                note_text = f"Role {ignore_role.mention} dihapus dari daftar whitelist pengiriman link."
+            else:
+                note_text = f"Role {ignore_role.mention} memang belum ada di daftar whitelist."
+        elif action_val == "add_role":
+            enabled = True
+            if ignore_role.id not in role_ids:
+                role_ids.append(ignore_role.id)
+            set_autodelete_config(interaction.guild.id, enabled=True, whitelist_role_ids=role_ids)
+            note_text = f"Auto-delete aktif dan role {ignore_role.mention} ditambahkan ke daftar whitelist."
+        else:
+            # Default: enable
+            enabled = True
+            if ignore_role and ignore_role.id not in role_ids:
+                role_ids.append(ignore_role.id)
+            set_autodelete_config(interaction.guild.id, enabled=True, whitelist_role_ids=role_ids)
+            if ignore_role:
+                note_text = (
+                    f"Fitur auto-delete pesan URL & `discord.gg` berhasil **diaktifkan** "
+                    f"dan role {ignore_role.mention} ditambahkan ke whitelist."
+                )
+            else:
+                note_text = "Fitur auto-delete pesan URL & `discord.gg` berhasil **diaktifkan**."
+
+        whitelist_roles = get_autodelete_whitelist_roles(interaction.guild)
+        whitelist_text = (
+            ", ".join(r.mention for r in whitelist_roles)
+            if whitelist_roles
+            else "Hanya Administrator (Belum ada role tambahan)"
+        )
+
+        bot_member = interaction.guild.me or interaction.guild.get_member(bot.user.id)
+        has_manage_messages = bool(bot_member and bot_member.guild_permissions.manage_messages)
+
+        embed_color = 0x2ECC71 if enabled else 0xE67E22
+        embed = discord.Embed(
+            title="🛡️ Konfigurasi Auto-Delete Link & Discord Invite",
+            color=embed_color,
+        )
+        embed.add_field(
+            name="Status Auto-Delete",
+            value="✅ Aktif" if enabled else "🔴 Nonaktif",
+            inline=True,
+        )
+        embed.add_field(
+            name="Target Filter",
+            value="URL (`http://`, `https://`, `www.`) & Invite (`discord.gg`, `discord.com/invite`)",
+            inline=True,
+        )
+        embed.add_field(
+            name="Ignore Role Whitelist (Bisa Kirim Link)",
+            value=whitelist_text,
+            inline=False,
+        )
+        embed.add_field(
+            name="Keterangan",
+            value=note_text,
+            inline=False,
+        )
+        if not has_manage_messages:
+            embed.add_field(
+                name="⚠️ Peringatan Izin Bot",
+                value="Bot belum memiliki izin **Manage Messages** (`Kelola Pesan`) di server ini. Mohon aktifkan izin tersebut agar bot dapat menghapus pesan secara otomatis.",
+                inline=False,
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 
