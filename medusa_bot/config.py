@@ -255,17 +255,23 @@ def get_autodelete_config(guild_id: int) -> dict:
     for role_id in raw_roles:
         try:
             rid = int(role_id)
-            if rid not in whitelist_role_ids:
+            if rid != int(guild_id) and rid not in whitelist_role_ids:
                 whitelist_role_ids.append(rid)
         except (ValueError, TypeError):
             continue
     return {
         "enabled": enabled,
         "whitelist_role_ids": whitelist_role_ids,
+        "automod_rule_id": cfg.get("autodelete_automod_rule_id"),
     }
 
 
-def set_autodelete_config(guild_id: int, enabled: bool, whitelist_role_ids: Optional[list] = None) -> dict:
+def set_autodelete_config(
+    guild_id: int,
+    enabled: bool,
+    whitelist_role_ids: Optional[list] = None,
+    automod_rule_id: Optional[int] = None,
+) -> dict:
     config = load_config()
     guild_key = str(guild_id)
     if guild_key not in config:
@@ -279,17 +285,20 @@ def set_autodelete_config(guild_id: int, enabled: bool, whitelist_role_ids: Opti
     for role_id in whitelist_role_ids or []:
         try:
             rid = int(role_id)
-            if rid not in normalized_role_ids:
+            if rid != int(guild_id) and rid not in normalized_role_ids:
                 normalized_role_ids.append(rid)
         except (ValueError, TypeError):
             continue
 
     config[guild_key]["autodelete_url_enabled"] = bool(enabled)
     config[guild_key]["autodelete_whitelist_role_ids"] = normalized_role_ids
+    if automod_rule_id is not None:
+        config[guild_key]["autodelete_automod_rule_id"] = int(automod_rule_id)
     save_config(config)
     return {
         "enabled": bool(enabled),
         "whitelist_role_ids": normalized_role_ids,
+        "automod_rule_id": config[guild_key].get("autodelete_automod_rule_id"),
     }
 
 

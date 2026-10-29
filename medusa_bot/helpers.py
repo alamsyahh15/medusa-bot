@@ -34,6 +34,7 @@ from .config import (
     ROBLOX_USER_LOOKUP_API,
     get_autodelete_config,
     get_order_role_ids,
+    set_autodelete_config,
 )
 
 
@@ -1282,12 +1283,15 @@ def build_halloween_profile_embed(
     return embed
 
 
+AUTODELETE_AUTOMOD_RULE_NAME = "Medusa Auto-Delete Links & Invites"
+
 AUTODELETE_URL_REGEX = re.compile(
     r"(?i)(?:"
     r"https?://\S+"
     r"|\bwww\.[a-z0-9-]+(?:\.[a-z0-9-]+)+\b\S*"
     r"|\bdiscord\.gg(?:/\S*)?"
     r"|\b(?:discord(?:app)?\.com/invite|dsc\.gg)(?:/\S*)?"
+    r"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|gg|id|io|co|me|xyz|ly|gl|tv|be|app|link|site|online|store|shop|info|biz|dev|ai|cc|to|sh|vip)/\S*"
     r")"
 )
 
@@ -1304,6 +1308,8 @@ def get_autodelete_whitelist_roles(guild: Optional[discord.Guild]) -> list[disco
     cfg = get_autodelete_config(guild.id)
     roles = []
     for role_id in cfg.get("whitelist_role_ids", []):
+        if int(role_id) == int(guild.id):
+            continue
         role = guild.get_role(role_id)
         if role:
             roles.append(role)
@@ -1313,22 +1319,42 @@ def get_autodelete_whitelist_roles(guild: Optional[discord.Guild]) -> list[disco
 def is_member_whitelisted_autodelete(
     member: Union[discord.Member, discord.User, None],
     guild: Optional[discord.Guild],
+    raw_role_ids: Optional[list] = None,
 ) -> bool:
     if not guild or not member:
         return True
     if getattr(member, "bot", False):
         return True
     if not isinstance(member, discord.Member):
-        member = guild.get_member(member.id)
-    if not isinstance(member, discord.Member):
-        return False
-    if member.guild_permissions.administrator:
-        return True
+        member = guild.get_member(member.id) or member
+
+    if isinstance(member, discord.Member):
+        try:
+            if member.guild_permissions.administrator:
+                return True
+        except Exception:
+            pass
+
     cfg = get_autodelete_config(guild.id)
-    whitelist_ids = set(cfg.get("whitelist_role_ids") or [])
+    whitelist_ids = {int(rid) for rid in (cfg.get("whitelist_role_ids") or []) if int(rid) != int(guild.id)}
     if not whitelist_ids:
         return False
-    member_role_ids = {role.id for role in getattr(member, "roles", [])}
+
+    member_role_ids = set()
+    for role in getattr(member, "roles", []) or []:
+        if getattr(role, "id", None):
+            member_role_ids.add(int(role.id))
+    for rid in getattr(member, "_roles", []) or []:
+        try:
+            member_role_ids.add(int(rid))
+        except (ValueError, TypeError):
+            pass
+    for rid in raw_role_ids or []:
+        try:
+            member_role_ids.add(int(rid))
+        except (ValueError, TypeError):
+            pass
+    member_role_ids.discard(int(guild.id))
     return bool(member_role_ids.intersection(whitelist_ids))
 
 
@@ -1395,6 +1421,206 @@ async def handle_autodelete_message(message: discord.Message) -> bool:
     except Exception as e:
         log_debug("autodelete.error", error=str(e))
     return False
+
+
+async def handle_raw_autodelete_message_edit(bot, payload: discord.RawMessageUpdateEvent) -> bool:
+    if not payload or not payload.guild_id:
+        return False
+
+    cfg = get_autodelete_config(payload.guild_id)
+    if not cfg.get("enabled"):
+        return False
+
+    data = payload.data or {}
+    author_data = data.get("author") or {}
+    if author_data.get("bot"):
+        return False
+
+    has_link = False
+    if contains_autodelete_link(data.get("content")):
+        has_link = True
+    if not has_link:
+        for embed in data.get("embeds") or []:
+            if isinstance(embed, dict):
+                if (
+                    contains_autodelete_link(embed.get("url"))
+                    or contains_autodelete_link(embed.get("title"))
+                    or contains_autodelete_link(embed.get("description"))
+                ):
+                    has_link = True
+                    break
+
+    if not has_link:
+        return False
+
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return False
+
+    author_id = author_data.get("id")
+    member_data = data.get("member") or {}
+    raw_roles = member_data.get("roles") or []
+
+    member = None
+    if author_id:
+        try:
+            uid = int(author_id)
+            member = guild.get_member(uid)
+            if not member:
+                try:
+                    member = await guild.fetch_member(uid)
+                except Exception:
+                    pass
+        except (ValueError, TypeError):
+            pass
+    elif payload.cached_message and payload.cached_message.author:
+        member = payload.cached_message.author
+
+    if member and is_member_whitelisted_autodelete(member, guild, raw_role_ids=raw_roles):
+        return False
+
+    try:
+        await bot.http.delete_message(payload.channel_id, payload.message_id)
+        log_debug(
+            "autodelete.raw_edit_deleted",
+            guild=payload.guild_id,
+            channel=payload.channel_id,
+            message_id=payload.message_id,
+        )
+        channel = guild.get_channel(payload.channel_id)
+        if channel and hasattr(channel, "send"):
+            mention_text = f"<@{author_id}>" if author_id else "Member"
+            try:
+                await channel.send(
+                    f"⚠️ {mention_text}, pengiriman link/URL atau `discord.gg` tidak diizinkan di server ini.",
+                    delete_after=5,
+                )
+            except Exception:
+                pass
+        return True
+    except (discord.Forbidden, discord.NotFound):
+        pass
+    except Exception as e:
+        log_debug("autodelete.raw_edit_error", error=str(e))
+    return False
+
+
+async def sync_autodelete_automod_rule(bot, guild: discord.Guild) -> tuple[bool, str]:
+    if not guild or not bot:
+        return False, "Guild tidak valid."
+
+    bot_member = guild.me or (guild.get_member(bot.user.id) if bot.user else None)
+    if not bot_member or not bot_member.guild_permissions.manage_guild:
+        return (
+            False,
+            "Bot belum memiliki izin **Manage Server** (`Kelola Server`) untuk mengaktifkan Discord AutoMod.",
+        )
+
+    cfg = get_autodelete_config(guild.id)
+    enabled = bool(cfg.get("enabled", False))
+    whitelist_role_ids = [
+        str(rid) for rid in (cfg.get("whitelist_role_ids") or []) if int(rid) != int(guild.id)
+    ][:20]
+    saved_rule_id = str(cfg["automod_rule_id"]) if cfg.get("automod_rule_id") else None
+
+    route_list = discord.http.Route(
+        "GET",
+        "/guilds/{guild_id}/auto-moderation/rules",
+        guild_id=guild.id,
+    )
+    try:
+        existing_rules = await bot.http.request(route_list)
+    except Exception as e:
+        log_debug("automod.fetch_error", guild=guild.id, error=str(e))
+        return False, f"Gagal membaca AutoMod rules: {e}"
+
+    target_rule = None
+    if isinstance(existing_rules, list):
+        for r in existing_rules:
+            if not isinstance(r, dict):
+                continue
+            if saved_rule_id and str(r.get("id")) == saved_rule_id:
+                target_rule = r
+                break
+            if r.get("name") == AUTODELETE_AUTOMOD_RULE_NAME:
+                target_rule = r
+                break
+
+    payload = {
+        "name": AUTODELETE_AUTOMOD_RULE_NAME,
+        "event_type": 1,
+        "trigger_type": 1,
+        "trigger_metadata": {
+            "keyword_filter": [
+                "*http://*",
+                "*https://*",
+                "*www.*",
+                "*discord.gg*",
+                "*discord.com/invite*",
+                "*discordapp.com/invite*",
+                "*dsc.gg*",
+                "*tiktok.com/*",
+                "*youtu.be/*",
+                "*youtube.com/*",
+                "*instagram.com/*",
+                "*t.me/*",
+                "*bit.ly/*",
+            ],
+            "regex_patterns": [
+                r"(?i)(https?://\S+|www\.[a-z0-9-]+(\.[a-z0-9-]+)+)",
+                r"(?i)(discord\.gg(/\S*)?|(discord(app)?\.com/invite|dsc\.gg)(/\S*)?)",
+                r"(?i)\b[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|net|org|gg|id|io|co|me|xyz|ly|tv|be|app|link|site|store|shop)/\S+",
+            ],
+        },
+        "actions": [
+            {
+                "type": 1,
+                "metadata": {
+                    "custom_message": "⚠️ Pengiriman link/URL atau invite Discord tidak diizinkan di server ini.",
+                },
+            }
+        ],
+        "enabled": enabled,
+        "exempt_roles": whitelist_role_ids,
+    }
+
+    try:
+        if target_rule:
+            rule_id = target_rule["id"]
+            route_patch = discord.http.Route(
+                "PATCH",
+                "/guilds/{guild_id}/auto-moderation/rules/{rule_id}",
+                guild_id=guild.id,
+                rule_id=rule_id,
+            )
+            updated_rule = await bot.http.request(route_patch, json=payload)
+            set_autodelete_config(
+                guild.id,
+                enabled=enabled,
+                whitelist_role_ids=cfg.get("whitelist_role_ids"),
+                automod_rule_id=int(updated_rule["id"]),
+            )
+            return True, "Discord AutoMod Rule berhasil diperbarui."
+        elif enabled:
+            route_post = discord.http.Route(
+                "POST",
+                "/guilds/{guild_id}/auto-moderation/rules",
+                guild_id=guild.id,
+            )
+            created_rule = await bot.http.request(route_post, json=payload)
+            set_autodelete_config(
+                guild.id,
+                enabled=enabled,
+                whitelist_role_ids=cfg.get("whitelist_role_ids"),
+                automod_rule_id=int(created_rule["id"]),
+            )
+            return True, "Discord AutoMod Rule berhasil dibuat dan diaktifkan."
+        else:
+            return True, "Auto-Delete dalam keadaan nonaktif."
+    except Exception as e:
+        log_debug("automod.sync_error", guild=guild.id, error=str(e))
+        return False, f"Gagal sinkronisasi Discord AutoMod Rule: {e}"
+
 
 
 

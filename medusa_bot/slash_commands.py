@@ -75,6 +75,7 @@ from .helpers import (
     resolve_text_channel,
     sanitize_roblox_username,
     send_interaction_message,
+    sync_autodelete_automod_rule,
     upload_marketplace_payment_proof,
     upload_payment_proof,
     validate_qris,
@@ -2144,6 +2145,13 @@ def register_slash_commands(bot):
             )
             return
 
+        if ignore_role is not None and (ignore_role.is_default() or ignore_role.id == interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ Role `@everyone` tidak boleh dimasukkan ke dalam whitelist `ignore_role` karena akan mengizinkan semua member mengirim link.",
+                ephemeral=True,
+            )
+            return
+
         action_val = action.value if action else "enable"
         current_cfg = get_autodelete_config(interaction.guild.id)
         enabled = current_cfg.get("enabled", False)
@@ -2155,6 +2163,8 @@ def register_slash_commands(bot):
                 ephemeral=True,
             )
             return
+
+        await interaction.response.defer(ephemeral=True)
 
         if action_val == "info":
             note_text = "Menampilkan konfigurasi auto-delete saat ini."
@@ -2193,6 +2203,8 @@ def register_slash_commands(bot):
             else:
                 note_text = "Fitur auto-delete pesan URL & `discord.gg` berhasil **diaktifkan**."
 
+        automod_ok, automod_msg = await sync_autodelete_automod_rule(bot, interaction.guild)
+
         whitelist_roles = get_autodelete_whitelist_roles(interaction.guild)
         whitelist_text = (
             ", ".join(r.mention for r in whitelist_roles)
@@ -2202,6 +2214,7 @@ def register_slash_commands(bot):
 
         bot_member = interaction.guild.me or interaction.guild.get_member(bot.user.id)
         has_manage_messages = bool(bot_member and bot_member.guild_permissions.manage_messages)
+        has_manage_guild = bool(bot_member and bot_member.guild_permissions.manage_guild)
 
         embed_color = 0x2ECC71 if enabled else 0xE67E22
         embed = discord.Embed(
@@ -2214,9 +2227,14 @@ def register_slash_commands(bot):
             inline=True,
         )
         embed.add_field(
-            name="Target Filter",
-            value="URL (`http://`, `https://`, `www.`) & Invite (`discord.gg`, `discord.com/invite`)",
+            name="Discord AutoMod Filter",
+            value=f"✅ {automod_msg}" if automod_ok else f"⚠️ {automod_msg}",
             inline=True,
+        )
+        embed.add_field(
+            name="Target Filter",
+            value="URL (`http://`, `https://`, `www.`, shortlink) & Invite (`discord.gg`, `discord.com/invite`)",
+            inline=False,
         )
         embed.add_field(
             name="Ignore Role Whitelist (Bisa Kirim Link)",
@@ -2228,14 +2246,19 @@ def register_slash_commands(bot):
             value=note_text,
             inline=False,
         )
-        if not has_manage_messages:
+        if not has_manage_messages or not has_manage_guild:
+            missing_perms = []
+            if not has_manage_messages:
+                missing_perms.append("**Manage Messages** (`Kelola Pesan`)")
+            if not has_manage_guild:
+                missing_perms.append("**Manage Server** (`Kelola Server`)")
             embed.add_field(
                 name="⚠️ Peringatan Izin Bot",
-                value="Bot belum memiliki izin **Manage Messages** (`Kelola Pesan`) di server ini. Mohon aktifkan izin tersebut agar bot dapat menghapus pesan secara otomatis.",
+                value=f"Mohon berikan bot izin {', '.join(missing_perms)} agar filter AutoMod & penghapusan pesan otomatis berjalan maksimal.",
                 inline=False,
             )
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 

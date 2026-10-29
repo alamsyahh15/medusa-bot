@@ -1,7 +1,12 @@
 from discord.ext import tasks
 
-from .config import get_leaderboard_config, set_leaderboard_config
-from .helpers import handle_autodelete_message, post_or_edit_leaderboard
+from .config import get_autodelete_config, get_leaderboard_config, set_leaderboard_config
+from .helpers import (
+    handle_autodelete_message,
+    handle_raw_autodelete_message_edit,
+    post_or_edit_leaderboard,
+    sync_autodelete_automod_rule,
+)
 
 
 def register_lifecycle(bot):
@@ -22,6 +27,12 @@ def register_lifecycle(bot):
             leaderboard_scheduler.start()
             print("✅ Leaderboard scheduler dimulai")
 
+        for guild in bot.guilds:
+            cfg = get_autodelete_config(guild.id)
+            if cfg.get("enabled"):
+                ok, msg = await sync_autodelete_automod_rule(bot, guild)
+                print(f"🛡️ Auto-Delete sync [{guild.name}]: {msg}")
+
     @bot.listen("on_message")
     async def on_message_autodelete(message):
         await handle_autodelete_message(message)
@@ -29,6 +40,10 @@ def register_lifecycle(bot):
     @bot.listen("on_message_edit")
     async def on_message_edit_autodelete(_before, after):
         await handle_autodelete_message(after)
+
+    @bot.listen("on_raw_message_edit")
+    async def on_raw_message_edit_autodelete(payload):
+        await handle_raw_autodelete_message_edit(bot, payload)
 
     return leaderboard_scheduler
 
