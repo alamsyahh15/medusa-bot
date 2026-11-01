@@ -80,7 +80,7 @@ from .helpers import (
     upload_payment_proof,
     validate_qris,
 )
-from .rating import RatingAdminProductView, RatingRequestView
+from .rating import ManualRatingSetupView, RatingAdminProductView, RatingRequestView
 
 
 class PaymentContextModal(discord.ui.Modal, title="Upload Payment"):
@@ -991,6 +991,7 @@ def register_slash_commands(bot):
         embed.add_field(name="Apps > Upload Payment", value="Klik kanan message bukti bayar lalu isi `order_number` di popup modal.", inline=False)
         embed.add_field(name="/ratingsetup 🔒", value="Set atau hapus channel log review/rating.", inline=False)
         embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya dropdown untuk ulasan bintang 1-5.", inline=False)
+        embed.add_field(name="/manual-rating 🔒", value="Input dan kirim testimoni/rating secara manual oleh Admin.", inline=False)
         embed.add_field(name="/leaderboard", value="Tampilkan leaderboard Top 10 Spender.", inline=False)
         embed.add_field(name="/profile 🎃", value="Cek profil Halloween dan total perolehan Pumpkin dari invite server kamu.", inline=False)
         embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
@@ -1643,6 +1644,39 @@ def register_slash_commands(bot):
         await interaction.response.send_message(
             embed=setup_embed,
             view=RatingAdminProductView(target_user=user),
+            ephemeral=True,
+        )
+
+    @bot.tree.command(name="manual-rating", description="Input dan kirim testimoni/rating secara manual oleh Admin")
+    @app_commands.describe(buyer="Pilih customer/buyer dari member Discord (opsional, bisa juga dipilih di dropdown)")
+    @app_commands.default_permissions(administrator=True)
+    async def manual_rating_command(interaction: discord.Interaction, buyer: Optional[discord.User] = None):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Command ini hanya bisa dijalankan di dalam server.", ephemeral=True)
+            return
+        rating_cfg = get_rating_log_config(interaction.guild.id)
+        if not rating_cfg:
+            await interaction.response.send_message("❌ Channel log rating belum diset. Gunakan `/ratingsetup` dulu.", ephemeral=True)
+            return
+
+        buyer_info = (
+            f"🛒 **Buyer saat ini:** {buyer.mention} (`{buyer.name}`)\n\n"
+            if buyer
+            else "🛒 **Buyer saat ini:** *(Belum dipilih — pilih di dropdown pertama atau ketik manual di pop-up)*\n\n"
+        )
+        setup_embed = discord.Embed(
+            title="✍️ Input Manual Testimoni / Rating",
+            description=(
+                f"{buyer_info}"
+                "1. *(Opsional)* Pilih **Buyer / Customer** di dropdown pertama\n"
+                "2. Pilih **Rating Bintang** (default **5 Bintang**)\n"
+                "3. Pilih **Produk** di dropdown ketiga untuk membuka form **Harga & Komentar** lalu langsung kirim ke channel testimoni"
+            ),
+            color=0x2B2D31,
+        )
+        await interaction.response.send_message(
+            embed=setup_embed,
+            view=ManualRatingSetupView(buyer=buyer),
             ephemeral=True,
         )
 

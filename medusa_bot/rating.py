@@ -276,6 +276,11 @@ class RatingAdminProductView(discord.ui.View):
                 emoji="🎁",
             ),
             discord.SelectOption(
+                label="Robux Visend",
+                value="Robux Visend",
+                emoji="📨",
+            ),
+            discord.SelectOption(
                 label="Limited Item",
                 value="Limited Item",
                 emoji="👑",
@@ -621,6 +626,391 @@ class RatingRequestView(discord.ui.View):
         )
         modal = RatingModal(rating_value=rating_val, original_message=interaction.message)
         await interaction.response.send_modal(modal)
+
+
+class ManualRatingModal(discord.ui.Modal):
+    def __init__(
+        self,
+        product_name: str,
+        rating_value: int = 5,
+        buyer_user: Optional[discord.User] = None,
+        setup_interaction: Optional[discord.Interaction] = None,
+    ):
+        stars_str = "⭐" * rating_value
+        super().__init__(title=f"Manual Rating ({stars_str}) — {product_name}"[:45])
+        self.product_name = product_name
+        self.rating_value = rating_value
+        self.buyer_user = buyer_user
+        self.setup_interaction = setup_interaction
+
+        self.nominal_input = discord.ui.TextInput(
+            label="Nominal / Harga",
+            placeholder="Contoh: 2950000, 2.950.000, atau 150k",
+            required=True,
+            max_length=64,
+        )
+        self.comment_input = discord.ui.TextInput(
+            label="Komentar / Testimoni",
+            placeholder="Tulis review/testimoni di sini (Kosongkan = Terima kasih!)...",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=500,
+        )
+        self.buyer_name_input = discord.ui.TextInput(
+            label="Nama Buyer Manual (Opsional)",
+            placeholder="Kosongkan jika sudah pilih Buyer di dropdown sebelumnya",
+            required=False,
+            max_length=64,
+        )
+        self.add_item(self.nominal_input)
+        self.add_item(self.comment_input)
+        self.add_item(self.buyer_name_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild:
+            await interaction.followup.send("❌ Command ini hanya bisa dijalankan di dalam server.", ephemeral=True)
+            return
+
+        product_name = (self.product_name or "").strip()
+        raw_nominal = (self.nominal_input.value or "").strip()
+        comment_text = (self.comment_input.value or "").strip()
+        manual_buyer = (self.buyer_name_input.value or "").strip()
+        rating_value = max(1, min(5, int(self.rating_value or 5)))
+
+        if not product_name or not raw_nominal:
+            await interaction.followup.send("❌ Produk dan Harga wajib diisi.", ephemeral=True)
+            return
+
+        all_targets = get_all_rating_log_configs()
+        local_cfg = get_rating_log_config(interaction.guild.id)
+        if local_cfg and not any(t["channel_id"] == local_cfg["channel_id"] for t in all_targets):
+            all_targets.append({
+                "guild_id": interaction.guild.id,
+                "channel_id": local_cfg["channel_id"],
+            })
+
+        if not all_targets:
+            await interaction.followup.send(
+                "❌ Channel log rating belum diset di server manapun. Gunakan `/ratingsetup` dulu.",
+                ephemeral=True,
+            )
+            return
+
+        order_id = get_next_rating_order_id(interaction.guild.id)
+        price_display = format_rating_nominal(raw_nominal)
+        admin_mention = interaction.user.mention
+        origin_guild_name = interaction.guild.name
+
+        if self.buyer_user:
+            buyer_display = self.buyer_user.mention
+            avatar_url = str(self.buyer_user.display_avatar.url)
+        elif manual_buyer:
+            buyer_display = manual_buyer
+            avatar_url = str(
+                interaction.guild.icon.url
+                if interaction.guild.icon
+                else interaction.user.display_avatar.url
+            )
+        else:
+            buyer_display = "Anonymous Buyer"
+            avatar_url = str(
+                interaction.guild.icon.url
+                if interaction.guild.icon
+                else interaction.user.display_avatar.url
+            )
+
+        comment_box = comment_text.replace("```", "'''") if comment_text else "Terima kasih!"
+        stars_spaced = " ".join(["⭐"] * rating_value)
+        now_utc = datetime.now(timezone.utc)
+        now_ts = int(now_utc.timestamp())
+
+        v2_components = [
+            {
+                "type": 17,
+                "components": [
+                    {
+                        "type": 9,
+                        "components": [
+                            {
+                                "type": 10,
+                                "content": (
+                                    f"## ✨ Testimoni Baru\n"
+                                    f"🧾 **Order ID :** {order_id}\n"
+                                    f"📦 **Produk :** {product_name}\n"
+                                    f"💰 **Harga :** 💵 {price_display}"
+                                ),
+                            }
+                        ],
+                        "accessory": {
+                            "type": 11,
+                            "media": {
+                                "url": avatar_url,
+                            },
+                        },
+                    },
+                    {
+                        "type": 14,
+                        "divider": True,
+                        "spacing": 1,
+                    },
+                    {
+                        "type": 10,
+                        "content": f"🌟 **Rating :** {stars_spaced}",
+                    },
+                    {
+                        "type": 14,
+                        "divider": True,
+                        "spacing": 1,
+                    },
+                    {
+                        "type": 10,
+                        "content": f"💬 **Komentar**\n```\n{comment_box}\n```",
+                    },
+                    {
+                        "type": 14,
+                        "divider": True,
+                        "spacing": 1,
+                    },
+                    {
+                        "type": 10,
+                        "content": (
+                            f"🛒 **Buyer :** {buyer_display}\n"
+                            f"🛡️ **Admin Handler :** {admin_mention}\n"
+                            f"🌐 **Server Asal :** {origin_guild_name}\n"
+                            f"🕒 **Dikirim :** <t:{now_ts}:R>\n\n"
+                            f"-# Terima kasih sudah berbelanja! • Verified Customer • <t:{now_ts}:f>"
+                        ),
+                    },
+                ],
+            }
+        ]
+
+        fallback_divider = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+        testimoni_desc = (
+            f"🧾 **Order ID :** {order_id}\n"
+            f"📦 **Produk :** {product_name}\n"
+            f"💰 **Harga :** 💵 {price_display}\n"
+            f"{fallback_divider}\n"
+            f"🌟 **Rating :** {stars_spaced}\n"
+            f"{fallback_divider}\n"
+            f"💬 **Komentar**\n"
+            f"```\n{comment_box}\n```\n"
+            f"{fallback_divider}\n"
+            f"🛒 **Buyer :** {buyer_display}\n"
+            f"🛡️ **Admin Handler :** {admin_mention}\n"
+            f"🌐 **Server Asal :** {origin_guild_name}\n"
+            f"🕒 **Dikirim :** <t:{now_ts}:R>"
+        )
+
+        fallback_embed = discord.Embed(
+            title="✨ Testimoni Baru",
+            description=testimoni_desc,
+            color=0x2B2D31,
+            timestamp=now_utc,
+        )
+        fallback_embed.set_thumbnail(url=avatar_url)
+        fallback_embed.set_footer(text="Terima kasih sudah berbelanja! • Verified Customer")
+
+        sent_count = 0
+        for target in all_targets:
+            ch_id = target["channel_id"]
+            target_guild = interaction.client.get_guild(target["guild_id"])
+            target_ch = None
+            if target_guild:
+                target_ch = target_guild.get_channel(ch_id)
+            if not target_ch:
+                target_ch = interaction.client.get_channel(ch_id)
+            if not target_ch:
+                try:
+                    target_ch = await interaction.client.fetch_channel(ch_id)
+                except Exception:
+                    target_ch = None
+
+            if isinstance(target_ch, discord.TextChannel):
+                guild_me = target_ch.guild.me or target_ch.guild.get_member(interaction.client.user.id)
+                if not guild_me:
+                    continue
+                perms = target_ch.permissions_for(guild_me)
+                if perms.view_channel and perms.send_messages and perms.embed_links:
+                    try:
+                        route = discord.http.Route(
+                            "POST",
+                            "/channels/{channel_id}/messages",
+                            channel_id=target_ch.id,
+                        )
+                        sent_data = await interaction.client.http.request(
+                            route,
+                            json={
+                                "flags": 32768,
+                                "components": v2_components,
+                            },
+                        )
+                        sent_count += 1
+                        sent_msg_id = int(sent_data["id"]) if isinstance(sent_data, dict) and sent_data.get("id") else None
+                        if sent_msg_id:
+                            try:
+                                partial_msg = target_ch.get_partial_message(sent_msg_id)
+                                await partial_msg.add_reaction("✅")
+                                await partial_msg.add_reaction("❤️")
+                            except (discord.HTTPException, discord.Forbidden):
+                                pass
+                    except Exception as v2_err:
+                        log_debug("manual_rating.v2_send_fallback", channel=ch_id, error=str(v2_err))
+                        try:
+                            sent_msg = await target_ch.send(embed=fallback_embed)
+                            sent_count += 1
+                            try:
+                                await sent_msg.add_reaction("✅")
+                                await sent_msg.add_reaction("❤️")
+                            except (discord.HTTPException, discord.Forbidden):
+                                pass
+                        except Exception as e:
+                            log_debug("manual_rating.send_broadcast_error", channel=ch_id, guild=target["guild_id"], error=str(e))
+
+        if sent_count == 0:
+            await interaction.followup.send(
+                "❌ Gagal mengirim testimoni ke channel log rating. Pastikan bot memiliki izin di channel tujuan.",
+                ephemeral=True,
+            )
+            return
+
+        log_debug(
+            "manual_rating.submitted",
+            guild=interaction.guild.id,
+            admin=interaction.user.id,
+            buyer=getattr(self.buyer_user, "id", manual_buyer or "anon"),
+            rating=rating_value,
+            order_id=order_id,
+            product=product_name,
+            price=price_display,
+            sent_count=sent_count,
+        )
+
+        done_embed = discord.Embed(
+            title="✅ Manual Rating Berhasil Dikirim!",
+            description=(
+                f"Testimoni telah berhasil dikirim ke channel log rating.\n\n"
+                f"• **Order ID:** `{order_id}`\n"
+                f"• **Buyer:** {buyer_display}\n"
+                f"• **Produk:** `{product_name}`\n"
+                f"• **Harga:** `{price_display}`\n"
+                f"• **Rating:** {stars_spaced}\n"
+                f"• **Komentar:** `{comment_box}`"
+            ),
+            color=0x2ECC71,
+        )
+        if self.setup_interaction:
+            try:
+                await self.setup_interaction.edit_original_response(embed=done_embed, view=None)
+                return
+            except Exception:
+                pass
+
+        await interaction.followup.send(embed=done_embed, ephemeral=True)
+
+
+class ManualRatingSetupView(discord.ui.View):
+    def __init__(self, buyer: Optional[discord.User] = None):
+        super().__init__(timeout=180)
+        self.selected_buyer: Optional[discord.User] = buyer
+        self.selected_rating: int = 5
+
+    def _build_status_embed(self) -> discord.Embed:
+        buyer_str = (
+            f"{self.selected_buyer.mention} (`{self.selected_buyer.name}`)"
+            if self.selected_buyer
+            else "Belum dipilih *(bisa pilih di bawah atau ketik manual di pop-up)*"
+        )
+        stars_str = "⭐" * self.selected_rating
+        return discord.Embed(
+            title="📝 Form Manual Rating (Admin)",
+            description=(
+                f"• **Buyer:** {buyer_str}\n"
+                f"• **Rating:** {stars_str} ({self.selected_rating}/5)\n\n"
+                "Pilih **Produk** pada dropdown paling bawah untuk lanjut mengisi **Harga & Komentar**."
+            ),
+            color=0x2B2D31,
+        )
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="🛒 Pilih Buyer / Customer (Opsional)...",
+        min_values=0,
+        max_values=1,
+        row=0,
+    )
+    async def select_buyer(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        self.selected_buyer = select.values[0] if select.values else None
+        await interaction.response.edit_message(embed=self._build_status_embed(), view=self)
+
+    @discord.ui.select(
+        placeholder="🌟 Pilih Rating Bintang (Default: 5 Bintang)...",
+        min_values=1,
+        max_values=1,
+        row=1,
+        options=[
+            discord.SelectOption(label="⭐⭐⭐⭐⭐ 5 Bintang", value="5", description="Sangat Puas", default=True),
+            discord.SelectOption(label="⭐⭐⭐⭐ 4 Bintang", value="4", description="Bagus"),
+            discord.SelectOption(label="⭐⭐⭐ 3 Bintang", value="3", description="Cukup"),
+            discord.SelectOption(label="⭐⭐ 2 Bintang", value="2", description="Kurang"),
+            discord.SelectOption(label="⭐ 1 Bintang", value="1", description="Sangat Buruk"),
+        ],
+    )
+    async def select_rating(self, interaction: discord.Interaction, select: discord.ui.Select):
+        try:
+            self.selected_rating = int(select.values[0])
+        except (ValueError, IndexError):
+            self.selected_rating = 5
+        for opt in select.options:
+            opt.default = (opt.value == str(self.selected_rating))
+        await interaction.response.edit_message(embed=self._build_status_embed(), view=self)
+
+    @discord.ui.select(
+        placeholder="📦 Pilih Produk untuk isi Harga & Komentar...",
+        min_values=1,
+        max_values=1,
+        row=2,
+        options=[
+            discord.SelectOption(
+                label="Robux Payout",
+                value="Robux Payout",
+                emoji="👥",
+            ),
+            discord.SelectOption(
+                label="Robux Gamepass",
+                value="Robux Gamepass",
+                emoji="🎫",
+            ),
+            discord.SelectOption(
+                label="Robux GIG",
+                value="Robux GIG",
+                emoji="🎁",
+            ),
+            discord.SelectOption(
+                label="Robux Visend",
+                value="Robux Visend",
+                emoji="📨",
+            ),
+            discord.SelectOption(
+                label="Limited Item",
+                value="Limited Item",
+                emoji="👑",
+            ),
+        ],
+    )
+    async def select_product(self, interaction: discord.Interaction, select: discord.ui.Select):
+        selected_product = select.values[0]
+        await interaction.response.send_modal(
+            ManualRatingModal(
+                product_name=selected_product,
+                rating_value=self.selected_rating,
+                buyer_user=self.selected_buyer,
+                setup_interaction=interaction,
+            )
+        )
+
 
 
 
