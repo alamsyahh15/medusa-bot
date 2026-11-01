@@ -80,7 +80,7 @@ from .helpers import (
     upload_payment_proof,
     validate_qris,
 )
-from .rating import RatingRequestView
+from .rating import RatingAdminProductView, RatingRequestView
 
 
 class PaymentContextModal(discord.ui.Modal, title="Upload Payment"):
@@ -1613,23 +1613,31 @@ def register_slash_commands(bot):
         embed.add_field(name="Kegunaan", value="Channel ini akan menerima ulasan/rating pelanggan (termasuk broadcast antar-server yang terintegrasi).", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="rating", description="Kirim pesan rating dengan dropdown ulasan bintang 1-5")
+    @bot.tree.command(name="rating", description="Setup Produk & Harga terlebih dahulu lalu tampilkan panel rating ke customer")
     @app_commands.default_permissions(administrator=True)
     async def rating_command(interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Command ini hanya bisa dijalankan di dalam server.", ephemeral=True)
+            return
         rating_cfg = get_rating_log_config(interaction.guild.id)
         if not rating_cfg:
             await interaction.response.send_message("❌ Channel log rating belum diset. Gunakan `/ratingsetup` dulu.", ephemeral=True)
             return
 
-        embed = discord.Embed(
-            title="⭐ Beri Rating & Ulasan",
-            description="Pilih rating bintang pada menu dropdown di bawah untuk memberikan penilaian skala **1 sampai 5** beserta ulasan kamu.",
-            color=0x1A1F5E,
+        setup_embed = discord.Embed(
+            title="⚙️ Setup Rating Customer",
+            description=(
+                "1. Pilih **Produk** pada menu dropdown di bawah ini\n"
+                "2. Isi **Nominal / Harga** pada pop-up yang muncul\n"
+                "3. Panel rating akan otomatis ditampilkan ke customer di channel ini"
+            ),
+            color=0x2B2D31,
         )
-        embed.add_field(name="Cara Memberi Rating", value="1. Pilih rating `Bintang 1 - 5` pada menu dropdown di bawah\n2. Tulis komentar / review pada dialog pop-up yang muncul\n3. Kirim ulasan kamu", inline=False)
-        embed.add_field(name="Tujuan", value="Hasil review akan otomatis dikirim ke channel log rating server ini dan seluruh server terintegrasi.", inline=False)
-        embed.set_footer(text="Pilih salah satu bintang pada dropdown di bawah untuk memulai.")
-        await interaction.response.send_message(embed=embed, view=RatingRequestView())
+        await interaction.response.send_message(
+            embed=setup_embed,
+            view=RatingAdminProductView(),
+            ephemeral=True,
+        )
 
     @bot.tree.command(name="setrole", description="Atur role yang boleh memakai /order dan upload payment")
     @app_commands.describe(action="Pilih add, remove, atau clear", role="Role target untuk add/remove")

@@ -1,10 +1,217 @@
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
 import discord
 
-from .config import get_all_rating_log_configs, get_rating_log_config
-from .helpers import log_debug
+from .config import (
+    delete_rating_session,
+    get_all_rating_log_configs,
+    get_next_rating_order_id,
+    get_rating_log_config,
+    get_rating_session,
+    save_rating_session,
+)
+from .helpers import format_rupiah, log_debug
+
+RATING_DIVIDER = "──────────────────────────"
+
+
+def format_rating_nominal(raw_nominal: str) -> str:
+    raw = (raw_nominal or "").strip()
+    if not raw:
+        return "Rp 0"
+
+    cleaned = raw.lower().replace("rp", "").replace("idr", "").strip()
+    shorthand_match = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*(k|rb|ribu|jt|juta|m)", cleaned)
+    if shorthand_match:
+        num_str = shorthand_match.group(1).replace(",", ".")
+        unit = shorthand_match.group(2)
+        try:
+            val = float(num_str)
+            multiplier = 1_000_000 if unit in ("jt", "juta", "m") else 1_000
+            return format_rupiah(int(round(val * multiplier)))
+        except ValueError:
+            pass
+
+    digits_only = re.sub(r"[.\s,]", "", cleaned)
+    if digits_only.isdigit():
+        return format_rupiah(int(digits_only))
+
+    if raw.lower().startswith("rp"):
+        return raw
+    return f"Rp {raw}"
+
+
+def extract_rating_metadata_from_message(message: Optional[discord.Message]) -> dict:
+    meta = {
+        "order_id": "0001",
+        "product": "-",
+        "price": "Rp 0",
+        "admin_id": None,
+        "admin_mention": "-",
+    }
+    if not message:
+        return meta
+
+    session = get_rating_session(message.id)
+    if isinstance(session, dict):
+        meta["order_id"] = session.get("order_id") or meta["order_id"]
+        meta["product"] = session.get("product") or meta["product"]
+        meta["price"] = session.get("price") or meta["price"]
+        meta["admin_id"] = session.get("admin_id")
+        if session.get("admin_mention"):
+            meta["admin_mention"] = session["admin_mention"]
+        elif meta["admin_id"]:
+            meta["admin_mention"] = f"<@{meta['admin_id']}>"
+        return meta
+
+    if message.embeds:
+        embed = message.embeds[0]
+        for field in embed.fields:
+            fname = (field.name or "").strip().lower()
+            fval = (field.value or "").strip()
+            if "order id" in fname:
+                meta["order_id"] = fval.strip("`")
+            elif "produk" in fname:
+                meta["product"] = fval
+            elif "harga" in fname or "nominal" in fname:
+                meta["price"] = fval.replace("💵", "").strip()
+            elif "admin" in fname:
+                meta["admin_mention"] = fval
+
+    return meta
+
+
+RATING_PRODUCTS = [
+    "Robux Payout",
+    "Robux Gamepass",
+    "Robux GIG",
+    "Limited Item",
+]
+
+
+class RatingAdminModal(discord.ui.Modal):
+    def __init__(self, product_name: str, setup_interaction: Optional[discord.Interaction] = None):
+        super().__init__(title=f"Harga — {product_name}"[:45])
+        self.product_name = product_name
+        self.setup_interaction = setup_interaction
+        self.nominal_input = discord.ui.TextInput(
+            label="Nominal / Harga",
+            placeholder="Contoh: 2950000, 2.950.000, atau 150k",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.nominal_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild or not interaction.channel:
+            await interaction.followup.send("❌ Command ini hanya bisa dijalankan di dalam channel server.", ephemeral=True)
+            return
+
+        product_name = (self.product_name or "").strip()
+        raw_nominal = (self.nominal_input.value or "").strip()
+
+        if not product_name or not raw_nominal:
+            await interaction.followup.send("❌ Produk dan Harga wajib diisi.", ephemeral=True)
+            return
+
+        formatted_price = format_rating_nominal(raw_nominal)
+        order_id = get_next_rating_order_id(interaction.guild.id)
+        admin_mention = interaction.user.mention
+
+        embed = discord.Embed(
+            title="⭐ Beri Rating & Ulasan",
+            description=(
+                "Terima kasih telah berbelanja! Silakan pilih **rating bintang (1 sampai 5)** "
+                "pada menu dropdown di bawah dan tuliskan ulasan/testimoni kamu."
+            ),
+            color=0x2B2D31,
+        )
+        embed.add_field(name="💗 Order ID", value=f"`{order_id}`", inline=True)
+        embed.add_field(name="💗 Produk", value=product_name, inline=True)
+        embed.add_field(name="💗 Harga", value=f"💵 {formatted_price}", inline=True)
+        embed.add_field(name="💗 Admin Handler", value=admin_mention, inline=False)
+        embed.set_footer(text="Pilih bintang 1 - 5 pada dropdown di bawah untuk mengirim testimoni.")
+
+        try:
+            sent_msg = await interaction.channel.send(embed=embed, view=RatingRequestView())
+        except Exception as e:
+            log_debug("rating.admin_send_panel_error", error=str(e))
+            await interaction.followup.send(
+                f"❌ Gagal mengirim panel rating ke channel ini: {e}",
+                ephemeral=True,
+            )
+            return
+
+        save_rating_session(
+            sent_msg.id,
+            {
+                "order_id": order_id,
+                "product": product_name,
+                "price": formatted_price,
+                "admin_id": interaction.user.id,
+                "admin_mention": admin_mention,
+            },
+        )
+
+        done_embed = discord.Embed(
+            title="✅ Panel Rating Berhasil Ditampilkan",
+            description=(
+                f"Panel rating telah dikirim ke channel untuk diisi oleh customer.\n\n"
+                f"• **Produk:** `{product_name}`\n"
+                f"• **Harga:** `{formatted_price}`"
+            ),
+            color=0x2ECC71,
+        )
+        if self.setup_interaction:
+            try:
+                await self.setup_interaction.edit_original_response(embed=done_embed, view=None)
+                return
+            except Exception:
+                pass
+
+        await interaction.followup.send(embed=done_embed, ephemeral=True)
+
+
+class RatingAdminProductView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.select(
+        placeholder="Pilih produk...",
+        min_values=1,
+        max_values=1,
+        options=[
+            discord.SelectOption(
+                label="Robux Payout",
+                value="Robux Payout",
+                emoji="👥",
+            ),
+            discord.SelectOption(
+                label="Robux Gamepass",
+                value="Robux Gamepass",
+                emoji="🎫",
+            ),
+            discord.SelectOption(
+                label="Robux GIG",
+                value="Robux GIG",
+                emoji="🎁",
+            ),
+            discord.SelectOption(
+                label="Limited Item",
+                value="Limited Item",
+                emoji="👑",
+            ),
+        ],
+    )
+    async def select_product(self, interaction: discord.Interaction, select: discord.ui.Select):
+        selected_product = select.values[0]
+        await interaction.response.send_modal(
+            RatingAdminModal(product_name=selected_product, setup_interaction=interaction)
+        )
 
 
 class RatingModal(discord.ui.Modal):
@@ -15,8 +222,8 @@ class RatingModal(discord.ui.Modal):
         self.original_message = original_message
 
     comment = discord.ui.TextInput(
-        label="Comment / Feedback (opsional)",
-        placeholder="Tulis review atau saran kamu di sini...",
+        label="Komentar / Testimoni",
+        placeholder="Tulis review atau testimoni kamu di sini...",
         required=False,
         style=discord.TextStyle.paragraph,
         max_length=500,
@@ -46,35 +253,36 @@ class RatingModal(discord.ui.Modal):
             await interaction.followup.send("❌ Channel log rating belum diset di server manapun. Gunakan `/ratingsetup` dulu.", ephemeral=True)
             return
 
+        target_message = self.original_message or interaction.message
+        meta = extract_rating_metadata_from_message(target_message)
+        order_id = meta["order_id"]
+        product_name = meta["product"]
+        price_display = meta["price"]
+        admin_mention = meta["admin_mention"]
+
         comment_text = (self.comment.value or "").strip()
-        filled_stars = "⭐" * rating_value
-        empty_stars = "☆" * (5 - rating_value)
-        review_color_map = {
-            1: 0xE74C3C,
-            2: 0xE67E22,
-            3: 0xF1C40F,
-            4: 0x2ECC71,
-            5: 0x00D1D1,
-        }
-        quoted_comment = f"> {comment_text}" if comment_text else "> _Tanpa comment_"
-        now_utc = datetime.now(timezone.utc)
+        comment_box = comment_text.replace("```", "'''") if comment_text else "Terima kasih!"
+        stars_spaced = " ".join(["⭐"] * rating_value)
+
+        testimoni_desc = (
+            f"💗**Order ID :** {order_id}\n"
+            f"💗**Produk :** {product_name}\n"
+            f"💗**Harga :** 💵{price_display}\n"
+            f"{RATING_DIVIDER}\n"
+            f"💗**Rating :** {stars_spaced}\n"
+            f"{RATING_DIVIDER}\n"
+            f"💬**Komentar**\n"
+            f"```\n{comment_box}\n```\n"
+            f"{RATING_DIVIDER}\n"
+            f"💗**Buyer :** {interaction.user.mention}\n"
+            f"💗**Admin Handler** {admin_mention}"
+        )
+
         embed = discord.Embed(
-            description=(
-                f"### {interaction.user.display_name} memberi review\n\n"
-                f"**{filled_stars}**{empty_stars} • **{rating_value}/5**\n\n"
-                f"{quoted_comment}"
-            ),
-            color=review_color_map.get(rating_value, 0x00D1D1),
+            title="Testimoni Baru",
+            description=testimoni_desc,
+            color=0x2B2D31,
         )
-        embed.set_author(
-            name=str(interaction.user),
-            icon_url=interaction.user.display_avatar.url,
-        )
-        embed.add_field(name="Customer", value=f"{interaction.user.mention} (`{interaction.user.name}`)", inline=True)
-        embed.add_field(name="Server Asal", value=interaction.guild.name, inline=True)
-        embed.add_field(name="Dikirim", value=f"<t:{int(now_utc.timestamp())}:R>", inline=True)
-        embed.timestamp = now_utc
-        embed.set_footer(text="Terima kasih sudah berbelanja! • Verified Customer")
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
 
         sent_count = 0
@@ -120,30 +328,26 @@ class RatingModal(discord.ui.Modal):
             guild=interaction.guild.id,
             user=interaction.user.id,
             rating=rating_value,
+            order_id=order_id,
+            product=product_name,
+            price=price_display,
             has_comment=bool(comment_text),
             sent_count=sent_count,
             total_targets=len(all_targets),
         )
 
+        now_utc = datetime.now(timezone.utc)
         thank_you_embed = discord.Embed(
-            title="⭐ Thank you for your rating!",
-            description=(
-                f"Terima kasih {interaction.user.mention} sudah memberikan rating!\n\n"
-                f"**Rating:** {filled_stars}{empty_stars} • **{rating_value}/5**\n"
-                f"{quoted_comment}\n\n"
-                f"_Rating dan ulasan kamu telah berhasil dicatat._"
-            ),
-            color=review_color_map.get(rating_value, 0x00D1D1),
+            title="Testimoni Terkirim!",
+            description=testimoni_desc,
+            color=0x2ECC71,
+            timestamp=now_utc,
         )
-        thank_you_embed.set_author(
-            name=str(interaction.user),
-            icon_url=interaction.user.display_avatar.url,
-        )
-        thank_you_embed.set_footer(text="Verified Customer Rating • Thank you!")
-        thank_you_embed.timestamp = now_utc
+        thank_you_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        thank_you_embed.set_footer(text="Terima kasih sudah berbelanja! • Verified Customer")
 
-        target_message = self.original_message or interaction.message
         if target_message:
+            delete_rating_session(target_message.id)
             try:
                 await target_message.edit(content=None, embed=thank_you_embed, view=None)
             except Exception as e:
@@ -153,7 +357,7 @@ class RatingModal(discord.ui.Modal):
                 except Exception:
                     pass
 
-        await interaction.followup.send("✅ Rating berhasil dikirim. Terima kasih!", ephemeral=True)
+        await interaction.followup.send("✅ Rating dan testimoni berhasil dikirim. Terima kasih!", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         log_debug("rating.modal_error", error=str(error), user=getattr(interaction.user, "id", None))
@@ -230,4 +434,5 @@ class RatingRequestView(discord.ui.View):
         )
         modal = RatingModal(rating_value=rating_val, original_message=interaction.message)
         await interaction.response.send_modal(modal)
+
 

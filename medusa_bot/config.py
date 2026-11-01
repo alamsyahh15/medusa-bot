@@ -215,6 +215,60 @@ def get_all_rating_log_configs() -> list:
     return results
 
 
+def get_next_rating_order_id(guild_id: int, custom_order_id: Optional[str] = None) -> str:
+    config = load_config()
+    guild_key = str(guild_id)
+    if guild_key not in config:
+        config[guild_key] = {}
+
+    cleaned_custom = (custom_order_id or "").strip()
+    if cleaned_custom:
+        if cleaned_custom.isdigit():
+            config[guild_key]["rating_order_counter"] = int(cleaned_custom)
+            save_config(config)
+        return cleaned_custom
+
+    current_counter = int(config[guild_key].get("rating_order_counter", 0) or 0) + 1
+    config[guild_key]["rating_order_counter"] = current_counter
+    save_config(config)
+    return f"{current_counter:04d}"
+
+
+def save_rating_session(message_id: int, data: dict):
+    config = load_config()
+    sessions = config.get("__rating_sessions__", {})
+    if not isinstance(sessions, dict):
+        sessions = {}
+    sessions[str(message_id)] = data
+    # Keep only the latest 200 active rating sessions to prevent config bloat
+    if len(sessions) > 200:
+        oldest_keys = list(sessions.keys())[:-200]
+        for k in oldest_keys:
+            sessions.pop(k, None)
+    config["__rating_sessions__"] = sessions
+    save_config(config)
+
+
+def get_rating_session(message_id: int) -> Optional[dict]:
+    if not message_id:
+        return None
+    sessions = load_config().get("__rating_sessions__", {})
+    if not isinstance(sessions, dict):
+        return None
+    return sessions.get(str(message_id))
+
+
+def delete_rating_session(message_id: int):
+    if not message_id:
+        return
+    config = load_config()
+    sessions = config.get("__rating_sessions__", {})
+    if isinstance(sessions, dict) and str(message_id) in sessions:
+        sessions.pop(str(message_id), None)
+        config["__rating_sessions__"] = sessions
+        save_config(config)
+
+
 def set_order_role_config(guild_id: int, role_ids):
     config = load_config()
     guild_key = str(guild_id)
