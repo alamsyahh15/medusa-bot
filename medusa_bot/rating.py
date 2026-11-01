@@ -343,30 +343,95 @@ class RatingModal(discord.ui.Modal):
         stars_spaced = " ".join(["⭐"] * rating_value)
 
         now_utc = datetime.now(timezone.utc)
+        now_ts = int(now_utc.timestamp())
+        avatar_url = str(interaction.user.display_avatar.url)
+
+        v2_components = [
+            {
+                "type": 17,
+                "components": [
+                    {
+                        "type": 9,
+                        "components": [
+                            {
+                                "type": 10,
+                                "content": (
+                                    f"## ✨ Testimoni Baru\n"
+                                    f"🧾 **Order ID :** {order_id}\n"
+                                    f"📦 **Produk :** {product_name}\n"
+                                    f"💰 **Harga :** 💵 {price_display}"
+                                ),
+                            }
+                        ],
+                        "accessory": {
+                            "type": 11,
+                            "media": {
+                                "url": avatar_url,
+                            },
+                        },
+                    },
+                    {
+                        "type": 14,
+                        "divider": True,
+                        "spacing": 1,
+                    },
+                    {
+                        "type": 10,
+                        "content": f"🌟 **Rating :** {stars_spaced}",
+                    },
+                    {
+                        "type": 14,
+                        "divider": True,
+                        "spacing": 1,
+                    },
+                    {
+                        "type": 10,
+                        "content": f"💬 **Komentar**\n```\n{comment_box}\n```",
+                    },
+                    {
+                        "type": 14,
+                        "divider": True,
+                        "spacing": 1,
+                    },
+                    {
+                        "type": 10,
+                        "content": (
+                            f"🛒 **Buyer :** {interaction.user.mention}\n"
+                            f"🛡️ **Admin Handler :** {admin_mention}\n"
+                            f"🌐 **Server Asal :** {origin_guild_name}\n"
+                            f"🕒 **Dikirim :** <t:{now_ts}:R>\n\n"
+                            f"-# Terima kasih sudah berbelanja! • Verified Customer • <t:{now_ts}:f>"
+                        ),
+                    },
+                ],
+            }
+        ]
+
+        fallback_divider = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
         testimoni_desc = (
             f"🧾 **Order ID :** {order_id}\n"
             f"📦 **Produk :** {product_name}\n"
             f"💰 **Harga :** 💵 {price_display}\n"
-            f"{RATING_DIVIDER}\n"
+            f"{fallback_divider}\n"
             f"🌟 **Rating :** {stars_spaced}\n"
-            f"{RATING_DIVIDER}\n"
+            f"{fallback_divider}\n"
             f"💬 **Komentar**\n"
             f"```\n{comment_box}\n```\n"
-            f"{RATING_DIVIDER}\n"
+            f"{fallback_divider}\n"
             f"🛒 **Buyer :** {interaction.user.mention}\n"
             f"🛡️ **Admin Handler :** {admin_mention}\n"
             f"🌐 **Server Asal :** {origin_guild_name}\n"
-            f"🕒 **Dikirim :** <t:{int(now_utc.timestamp())}:R>"
+            f"🕒 **Dikirim :** <t:{now_ts}:R>"
         )
 
-        embed = discord.Embed(
+        fallback_embed = discord.Embed(
             title="✨ Testimoni Baru",
             description=testimoni_desc,
             color=0x2B2D31,
             timestamp=now_utc,
         )
-        embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.set_footer(text="Terima kasih sudah berbelanja! • Verified Customer")
+        fallback_embed.set_thumbnail(url=avatar_url)
+        fallback_embed.set_footer(text="Terima kasih sudah berbelanja! • Verified Customer")
 
         sent_count = 0
         for target in all_targets:
@@ -390,15 +455,39 @@ class RatingModal(discord.ui.Modal):
                 perms = target_ch.permissions_for(guild_me)
                 if perms.view_channel and perms.send_messages and perms.embed_links:
                     try:
-                        sent_msg = await target_ch.send(embed=embed)
+                        route = discord.http.Route(
+                            "POST",
+                            "/channels/{channel_id}/messages",
+                            channel_id=target_ch.id,
+                        )
+                        sent_data = await interaction.client.http.request(
+                            route,
+                            json={
+                                "flags": 32768,
+                                "components": v2_components,
+                            },
+                        )
                         sent_count += 1
+                        sent_msg_id = int(sent_data["id"]) if isinstance(sent_data, dict) and sent_data.get("id") else None
+                        if sent_msg_id:
+                            try:
+                                partial_msg = target_ch.get_partial_message(sent_msg_id)
+                                await partial_msg.add_reaction("✅")
+                                await partial_msg.add_reaction("❤️")
+                            except (discord.HTTPException, discord.Forbidden):
+                                pass
+                    except Exception as v2_err:
+                        log_debug("rating.v2_send_fallback", channel=ch_id, error=str(v2_err))
                         try:
-                            await sent_msg.add_reaction("✅")
-                            await sent_msg.add_reaction("❤️")
-                        except (discord.HTTPException, discord.Forbidden):
-                            pass
-                    except Exception as e:
-                        log_debug("rating.send_broadcast_error", channel=ch_id, guild=target["guild_id"], error=str(e))
+                            sent_msg = await target_ch.send(embed=fallback_embed)
+                            sent_count += 1
+                            try:
+                                await sent_msg.add_reaction("✅")
+                                await sent_msg.add_reaction("❤️")
+                            except (discord.HTTPException, discord.Forbidden):
+                                pass
+                        except Exception as e:
+                            log_debug("rating.send_broadcast_error", channel=ch_id, guild=target["guild_id"], error=str(e))
                 else:
                     log_debug("rating.broadcast_missing_perms", channel=ch_id, guild=target["guild_id"])
 
@@ -425,20 +514,37 @@ class RatingModal(discord.ui.Modal):
             color=0x2ECC71,
             timestamp=now_utc,
         )
-        thank_you_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        thank_you_embed.set_thumbnail(url=avatar_url)
         thank_you_embed.set_footer(text="Terima kasih sudah berbelanja! • Verified Customer")
 
         if target_message:
             delete_rating_session(target_message.id)
             try:
-                await target_message.edit(content=None, embed=thank_you_embed, view=None)
-            except Exception as e:
-                log_debug("rating.edit_message_exception", error=str(e))
-                if interaction.guild:
-                    try:
-                        await target_message.delete()
-                    except Exception:
-                        pass
+                patch_route = discord.http.Route(
+                    "PATCH",
+                    "/channels/{channel_id}/messages/{message_id}",
+                    channel_id=target_message.channel.id,
+                    message_id=target_message.id,
+                )
+                await interaction.client.http.request(
+                    patch_route,
+                    json={
+                        "flags": 32768,
+                        "content": "",
+                        "embeds": [],
+                        "components": v2_components,
+                    },
+                )
+            except Exception:
+                try:
+                    await target_message.edit(content=None, embed=thank_you_embed, view=None)
+                except Exception as e:
+                    log_debug("rating.edit_message_exception", error=str(e))
+                    if interaction.guild:
+                        try:
+                            await target_message.delete()
+                        except Exception:
+                            pass
 
         await interaction.followup.send("✅ Rating dan testimoni berhasil dikirim. Terima kasih!", ephemeral=True)
 
