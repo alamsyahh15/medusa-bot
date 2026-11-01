@@ -130,10 +130,10 @@ class RatingAdminModal(discord.ui.Modal):
             ),
             color=0x2B2D31,
         )
-        embed.add_field(name="💗 Order ID", value=f"`{order_id}`", inline=True)
-        embed.add_field(name="💗 Produk", value=product_name, inline=True)
-        embed.add_field(name="💗 Harga", value=f"💵 {formatted_price}", inline=True)
-        embed.add_field(name="💗 Admin Handler", value=admin_mention, inline=False)
+        embed.add_field(name="🧾 Order ID", value=f"`{order_id}`", inline=True)
+        embed.add_field(name="📦 Produk", value=product_name, inline=True)
+        embed.add_field(name="💰 Harga", value=f"💵 {formatted_price}", inline=True)
+        embed.add_field(name="🛡️ Admin Handler", value=admin_mention, inline=False)
         embed.set_footer(text="Pilih bintang 1 - 5 pada dropdown di bawah untuk mengirim testimoni.")
 
         try:
@@ -264,26 +264,31 @@ class RatingModal(discord.ui.Modal):
         comment_box = comment_text.replace("```", "'''") if comment_text else "Terima kasih!"
         stars_spaced = " ".join(["⭐"] * rating_value)
 
+        now_utc = datetime.now(timezone.utc)
         testimoni_desc = (
-            f"💗**Order ID :** {order_id}\n"
-            f"💗**Produk :** {product_name}\n"
-            f"💗**Harga :** 💵{price_display}\n"
+            f"🧾 **Order ID :** {order_id}\n"
+            f"📦 **Produk :** {product_name}\n"
+            f"💰 **Harga :** 💵 {price_display}\n"
             f"{RATING_DIVIDER}\n"
-            f"💗**Rating :** {stars_spaced}\n"
+            f"🌟 **Rating :** {stars_spaced}\n"
             f"{RATING_DIVIDER}\n"
-            f"💬**Komentar**\n"
+            f"💬 **Komentar**\n"
             f"```\n{comment_box}\n```\n"
             f"{RATING_DIVIDER}\n"
-            f"💗**Buyer :** {interaction.user.mention}\n"
-            f"💗**Admin Handler** {admin_mention}"
+            f"🛒 **Buyer :** {interaction.user.mention}\n"
+            f"🛡️ **Admin Handler :** {admin_mention}\n"
+            f"🌐 **Server Asal :** {interaction.guild.name}\n"
+            f"🕒 **Dikirim :** <t:{int(now_utc.timestamp())}:R>"
         )
 
         embed = discord.Embed(
-            title="Testimoni Baru",
+            title="✨ Testimoni Baru",
             description=testimoni_desc,
             color=0x2B2D31,
+            timestamp=now_utc,
         )
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        embed.set_footer(text="Terima kasih sudah berbelanja! • Verified Customer")
 
         sent_count = 0
         for target in all_targets:
