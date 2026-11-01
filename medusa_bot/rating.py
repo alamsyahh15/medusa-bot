@@ -50,6 +50,8 @@ def extract_rating_metadata_from_message(message: Optional[discord.Message]) -> 
         "price": "Rp 0",
         "admin_id": None,
         "admin_mention": "-",
+        "guild_id": None,
+        "guild_name": None,
     }
     if not message:
         return meta
@@ -60,6 +62,8 @@ def extract_rating_metadata_from_message(message: Optional[discord.Message]) -> 
         meta["product"] = session.get("product") or meta["product"]
         meta["price"] = session.get("price") or meta["price"]
         meta["admin_id"] = session.get("admin_id")
+        meta["guild_id"] = session.get("guild_id")
+        meta["guild_name"] = session.get("guild_name")
         if session.get("admin_mention"):
             meta["admin_mention"] = session["admin_mention"]
         elif meta["admin_id"]:
@@ -79,6 +83,8 @@ def extract_rating_metadata_from_message(message: Optional[discord.Message]) -> 
                 meta["price"] = fval.replace("💵", "").strip()
             elif "admin" in fname:
                 meta["admin_mention"] = fval
+            elif "server" in fname:
+                meta["guild_name"] = fval
 
     return meta
 
@@ -92,9 +98,15 @@ RATING_PRODUCTS = [
 
 
 class RatingAdminModal(discord.ui.Modal):
-    def __init__(self, product_name: str, setup_interaction: Optional[discord.Interaction] = None):
+    def __init__(
+        self,
+        product_name: str,
+        target_user: Optional[discord.abc.Snowflake] = None,
+        setup_interaction: Optional[discord.Interaction] = None,
+    ):
         super().__init__(title=f"Harga — {product_name}"[:45])
         self.product_name = product_name
+        self.target_user = target_user
         self.setup_interaction = setup_interaction
         self.nominal_input = discord.ui.TextInput(
             label="Nominal / Harga",
@@ -107,8 +119,8 @@ class RatingAdminModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        if not interaction.guild or not interaction.channel:
-            await interaction.followup.send("❌ Command ini hanya bisa dijalankan di dalam channel server.", ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send("❌ Command ini hanya bisa dijalankan dari dalam server.", ephemeral=True)
             return
 
         product_name = (self.product_name or "").strip()
@@ -125,26 +137,57 @@ class RatingAdminModal(discord.ui.Modal):
         embed = discord.Embed(
             title="⭐ Beri Rating & Ulasan",
             description=(
-                "Terima kasih telah berbelanja! Silakan pilih **rating bintang (1 sampai 5)** "
-                "pada menu dropdown di bawah dan tuliskan ulasan/testimoni kamu."
-            ),
+                f"Halo {self.target_user.mention if self.target_user else ''}! "
+                "Terima kasih telah berbelanja di **"
+                f"{interaction.guild.name}**.\n"
+                "Silakan pilih **rating bintang (1 sampai 5)** pada menu dropdown di bawah "
+                "dan tuliskan ulasan/testimoni kamu."
+            ).replace("Halo ! ", ""),
             color=0x2B2D31,
         )
         embed.add_field(name="🧾 Order ID", value=f"`{order_id}`", inline=True)
         embed.add_field(name="📦 Produk", value=product_name, inline=True)
         embed.add_field(name="💰 Harga", value=f"💵 {formatted_price}", inline=True)
-        embed.add_field(name="🛡️ Admin Handler", value=admin_mention, inline=False)
+        embed.add_field(name="🛡️ Admin Handler", value=admin_mention, inline=True)
+        embed.add_field(name="🌐 Server Asal", value=interaction.guild.name, inline=True)
         embed.set_footer(text="Pilih bintang 1 - 5 pada dropdown di bawah untuk mengirim testimoni.")
 
-        try:
-            sent_msg = await interaction.channel.send(embed=embed, view=RatingRequestView())
-        except Exception as e:
-            log_debug("rating.admin_send_panel_error", error=str(e))
-            await interaction.followup.send(
-                f"❌ Gagal mengirim panel rating ke channel ini: {e}",
-                ephemeral=True,
-            )
-            return
+        if self.target_user:
+            try:
+                user_obj = self.target_user
+                if not hasattr(user_obj, "send"):
+                    user_obj = interaction.client.get_user(self.target_user.id) or await interaction.client.fetch_user(
+                        self.target_user.id
+                    )
+                sent_msg = await user_obj.send(embed=embed, view=RatingRequestView())
+                destination_text = f"Direct Message (DM) {user_obj.mention} (`{user_obj.name}`)"
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    f"❌ Gagal mengirim survey rating ke DM {self.target_user.mention}. User mematikan DM dari anggota server.",
+                    ephemeral=True,
+                )
+                return
+            except Exception as e:
+                log_debug("rating.admin_send_dm_error", error=str(e))
+                await interaction.followup.send(
+                    f"❌ Gagal mengirim survey rating ke DM: {e}",
+                    ephemeral=True,
+                )
+                return
+        else:
+            if not interaction.channel:
+                await interaction.followup.send("❌ Channel tidak ditemukan.", ephemeral=True)
+                return
+            try:
+                sent_msg = await interaction.channel.send(embed=embed, view=RatingRequestView())
+                destination_text = f"Channel {interaction.channel.mention}"
+            except Exception as e:
+                log_debug("rating.admin_send_panel_error", error=str(e))
+                await interaction.followup.send(
+                    f"❌ Gagal mengirim panel rating ke channel ini: {e}",
+                    ephemeral=True,
+                )
+                return
 
         save_rating_session(
             sent_msg.id,
@@ -154,13 +197,17 @@ class RatingAdminModal(discord.ui.Modal):
                 "price": formatted_price,
                 "admin_id": interaction.user.id,
                 "admin_mention": admin_mention,
+                "guild_id": interaction.guild.id,
+                "guild_name": interaction.guild.name,
             },
         )
 
         done_embed = discord.Embed(
-            title="✅ Panel Rating Berhasil Ditampilkan",
+            title="✅ Survey Rating Berhasil Dikirim",
             description=(
-                f"Panel rating telah dikirim ke channel untuk diisi oleh customer.\n\n"
+                f"Panel survey rating telah dikirim untuk diisi oleh customer.\n\n"
+                f"• **Tujuan:** {destination_text}\n"
+                f"• **Order ID:** `{order_id}`\n"
                 f"• **Produk:** `{product_name}`\n"
                 f"• **Harga:** `{formatted_price}`"
             ),
@@ -177,13 +224,41 @@ class RatingAdminModal(discord.ui.Modal):
 
 
 class RatingAdminProductView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, target_user: Optional[discord.User] = None):
         super().__init__(timeout=180)
+        self.selected_user: Optional[discord.User] = target_user
 
     @discord.ui.select(
-        placeholder="Pilih produk...",
+        cls=discord.ui.UserSelect,
+        placeholder="📩 Pilih customer untuk kirim ke DM (Opsional)...",
+        min_values=0,
+        max_values=1,
+        row=0,
+    )
+    async def select_target_user(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        self.selected_user = select.values[0] if select.values else None
+        if self.selected_user:
+            msg_desc = (
+                f"📩 **Target DM dipilih:** {self.selected_user.mention} (`{self.selected_user.name}`)\n\n"
+                "Sekarang pilih **Produk** pada dropdown di bawah untuk mengisi **Nominal / Harga**."
+            )
+        else:
+            msg_desc = (
+                "📢 **Target:** Channel ini (Publik)\n\n"
+                "Pilih **Produk** pada dropdown di bawah untuk mengisi **Nominal / Harga**."
+            )
+        updated_embed = discord.Embed(
+            title="⚙️ Setup Rating Customer",
+            description=msg_desc,
+            color=0x2B2D31,
+        )
+        await interaction.response.edit_message(embed=updated_embed, view=self)
+
+    @discord.ui.select(
+        placeholder="📦 Pilih produk...",
         min_values=1,
         max_values=1,
+        row=1,
         options=[
             discord.SelectOption(
                 label="Robux Payout",
@@ -210,7 +285,11 @@ class RatingAdminProductView(discord.ui.View):
     async def select_product(self, interaction: discord.Interaction, select: discord.ui.Select):
         selected_product = select.values[0]
         await interaction.response.send_modal(
-            RatingAdminModal(product_name=selected_product, setup_interaction=interaction)
+            RatingAdminModal(
+                product_name=selected_product,
+                target_user=self.selected_user,
+                setup_interaction=interaction,
+            )
         )
 
 
@@ -232,25 +311,9 @@ class RatingModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        if not interaction.guild:
-            await interaction.followup.send("❌ Rating hanya bisa dikirim dari dalam server.", ephemeral=True)
-            return
-
         rating_value = self.rating_value
         if rating_value < 1 or rating_value > 5:
             await interaction.followup.send("❌ Rating tidak valid (harus 1 sampai 5).", ephemeral=True)
-            return
-
-        all_targets = get_all_rating_log_configs()
-        local_cfg = get_rating_log_config(interaction.guild.id)
-        if local_cfg and not any(t["channel_id"] == local_cfg["channel_id"] for t in all_targets):
-            all_targets.append({
-                "guild_id": interaction.guild.id,
-                "channel_id": local_cfg["channel_id"],
-            })
-
-        if not all_targets:
-            await interaction.followup.send("❌ Channel log rating belum diset di server manapun. Gunakan `/ratingsetup` dulu.", ephemeral=True)
             return
 
         target_message = self.original_message or interaction.message
@@ -259,6 +322,21 @@ class RatingModal(discord.ui.Modal):
         product_name = meta["product"]
         price_display = meta["price"]
         admin_mention = meta["admin_mention"]
+        origin_guild_id = meta.get("guild_id") or (interaction.guild.id if interaction.guild else None)
+        origin_guild_name = meta.get("guild_name") or (interaction.guild.name if interaction.guild else "MedusaBlox")
+
+        all_targets = get_all_rating_log_configs()
+        if origin_guild_id:
+            local_cfg = get_rating_log_config(int(origin_guild_id))
+            if local_cfg and not any(t["channel_id"] == local_cfg["channel_id"] for t in all_targets):
+                all_targets.append({
+                    "guild_id": int(origin_guild_id),
+                    "channel_id": local_cfg["channel_id"],
+                })
+
+        if not all_targets:
+            await interaction.followup.send("❌ Channel log rating belum diset di server manapun. Gunakan `/ratingsetup` dulu.", ephemeral=True)
+            return
 
         comment_text = (self.comment.value or "").strip()
         comment_box = comment_text.replace("```", "'''") if comment_text else "Terima kasih!"
@@ -277,7 +355,7 @@ class RatingModal(discord.ui.Modal):
             f"{RATING_DIVIDER}\n"
             f"🛒 **Buyer :** {interaction.user.mention}\n"
             f"🛡️ **Admin Handler :** {admin_mention}\n"
-            f"🌐 **Server Asal :** {interaction.guild.name}\n"
+            f"🌐 **Server Asal :** {origin_guild_name}\n"
             f"🕒 **Dikirim :** <t:{int(now_utc.timestamp())}:R>"
         )
 
@@ -330,7 +408,7 @@ class RatingModal(discord.ui.Modal):
 
         log_debug(
             "rating.submitted",
-            guild=interaction.guild.id,
+            guild=origin_guild_id,
             user=interaction.user.id,
             rating=rating_value,
             order_id=order_id,
@@ -341,9 +419,8 @@ class RatingModal(discord.ui.Modal):
             total_targets=len(all_targets),
         )
 
-        now_utc = datetime.now(timezone.utc)
         thank_you_embed = discord.Embed(
-            title="Testimoni Terkirim!",
+            title="✨ Testimoni Terkirim!",
             description=testimoni_desc,
             color=0x2ECC71,
             timestamp=now_utc,
@@ -357,10 +434,11 @@ class RatingModal(discord.ui.Modal):
                 await target_message.edit(content=None, embed=thank_you_embed, view=None)
             except Exception as e:
                 log_debug("rating.edit_message_exception", error=str(e))
-                try:
-                    await target_message.delete()
-                except Exception:
-                    pass
+                if interaction.guild:
+                    try:
+                        await target_message.delete()
+                    except Exception:
+                        pass
 
         await interaction.followup.send("✅ Rating dan testimoni berhasil dikirim. Terima kasih!", ephemeral=True)
 
@@ -416,11 +494,9 @@ class RatingRequestView(discord.ui.View):
         ],
     )
     async def select_stars(self, interaction: discord.Interaction, select: discord.ui.Select):
-        if not interaction.guild:
-            await interaction.response.send_message("❌ Rating hanya bisa dikirim dari dalam server.", ephemeral=True)
-            return
-
-        rating_cfg = get_rating_log_config(interaction.guild.id)
+        meta = extract_rating_metadata_from_message(interaction.message)
+        origin_guild_id = meta.get("guild_id") or (interaction.guild.id if interaction.guild else None)
+        rating_cfg = get_rating_log_config(int(origin_guild_id)) if origin_guild_id else None
         if not rating_cfg and not get_all_rating_log_configs():
             await interaction.response.send_message("❌ Channel log rating belum diset di server manapun. Gunakan `/ratingsetup` dulu.", ephemeral=True)
             return
@@ -433,11 +509,12 @@ class RatingRequestView(discord.ui.View):
 
         log_debug(
             "rating.select_chosen",
-            guild=getattr(interaction.guild, "id", None),
+            guild=origin_guild_id,
             user=getattr(interaction.user, "id", None),
             rating=rating_val,
         )
         modal = RatingModal(rating_value=rating_val, original_message=interaction.message)
         await interaction.response.send_modal(modal)
+
 
 

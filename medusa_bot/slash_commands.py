@@ -1613,9 +1613,10 @@ def register_slash_commands(bot):
         embed.add_field(name="Kegunaan", value="Channel ini akan menerima ulasan/rating pelanggan (termasuk broadcast antar-server yang terintegrasi).", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="rating", description="Setup Produk & Harga terlebih dahulu lalu tampilkan panel rating ke customer")
+    @bot.tree.command(name="rating", description="Setup Produk & Harga lalu kirim survey rating ke channel atau DM customer")
+    @app_commands.describe(user="Pilih customer jika ingin mengirim survey rating langsung ke DM (opsional)")
     @app_commands.default_permissions(administrator=True)
-    async def rating_command(interaction: discord.Interaction):
+    async def rating_command(interaction: discord.Interaction, user: Optional[discord.User] = None):
         if not interaction.guild:
             await interaction.response.send_message("❌ Command ini hanya bisa dijalankan di dalam server.", ephemeral=True)
             return
@@ -1624,18 +1625,24 @@ def register_slash_commands(bot):
             await interaction.response.send_message("❌ Channel log rating belum diset. Gunakan `/ratingsetup` dulu.", ephemeral=True)
             return
 
+        target_info = (
+            f"📩 **Target saat ini:** DM ke {user.mention} (`{user.name}`)\n\n"
+            if user
+            else "📢 **Target saat ini:** Channel ini (atau pilih customer di dropdown pertama untuk kirim ke DM)\n\n"
+        )
         setup_embed = discord.Embed(
             title="⚙️ Setup Rating Customer",
             description=(
-                "1. Pilih **Produk** pada menu dropdown di bawah ini\n"
-                "2. Isi **Nominal / Harga** pada pop-up yang muncul\n"
-                "3. Panel rating akan otomatis ditampilkan ke customer di channel ini"
+                f"{target_info}"
+                "1. *(Opsional)* Pilih **Customer** di dropdown pertama jika ingin kirim survey ke **DM**\n"
+                "2. Pilih **Produk** di dropdown kedua\n"
+                "3. Isi **Nominal / Harga** pada pop-up yang muncul"
             ),
             color=0x2B2D31,
         )
         await interaction.response.send_message(
             embed=setup_embed,
-            view=RatingAdminProductView(),
+            view=RatingAdminProductView(target_user=user),
             ephemeral=True,
         )
 
