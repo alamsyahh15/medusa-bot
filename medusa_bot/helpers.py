@@ -1828,6 +1828,12 @@ async def handle_sticky_on_message(bot, message: discord.Message):
     if not message or not message.guild or not message.channel:
         return
 
+    # Jangan trigger refresh dari pesan yang dikirim oleh bot sendiri
+    # (untuk mencegah infinite loop saat sticky message baru dikirim via HTTP).
+    # Untuk hasil command / modal bot, refresh_channel_stickies dipanggil secara eksplisit.
+    if getattr(message, "author", None) and getattr(message.author, "bot", False):
+        return
+
     msg_id = getattr(message, "id", None)
     if not msg_id or msg_id in _STICKY_KNOWN_MESSAGE_IDS:
         return
@@ -1842,14 +1848,6 @@ async def handle_sticky_on_message(bot, message: discord.Message):
     has_calc = bool(calc_cfg and int(calc_cfg.get("channel_id", 0)) == int(channel_id))
 
     if not has_eligible and not has_calc:
-        return
-
-    if has_eligible and eligible_cfg.get("message_id") and int(eligible_cfg["message_id"]) == int(msg_id):
-        _STICKY_KNOWN_MESSAGE_IDS.add(int(msg_id))
-        return
-
-    if has_calc and calc_cfg.get("message_id") and int(calc_cfg["message_id"]) == int(msg_id):
-        _STICKY_KNOWN_MESSAGE_IDS.add(int(msg_id))
         return
 
     _CHANNEL_NEEDS_STICKY_REFRESH[int(channel_id)] = True

@@ -907,6 +907,8 @@ def register_slash_commands(bot):
             )
             return
         await interaction.response.send_message(embed=build_calc_result_embed(calc_mode, amount))
+        if interaction.guild and interaction.channel:
+            await refresh_channel_stickies(bot, interaction.guild.id, interaction.channel.id, force=True)
 
     @bot.tree.command(name="qrissetup", description="Setup QRIS untuk server ini (Admin only)")
     @app_commands.describe(
@@ -1232,11 +1234,15 @@ def register_slash_commands(bot):
     @app_commands.describe(username_roblox="Username Roblox yang mau dicek")
     async def check_slash(interaction: discord.Interaction, username_roblox: str):
         await _handle_check_groups(interaction, username_roblox, config_type="community")
+        if interaction.guild and interaction.channel:
+            await refresh_channel_stickies(bot, interaction.guild.id, interaction.channel.id, force=True)
 
     @bot.tree.command(name="check-reseller", description="Cek apakah user Roblox sudah eligible di group reseller")
     @app_commands.describe(username_roblox="Username Roblox yang mau dicek")
     async def check_reseller_slash(interaction: discord.Interaction, username_roblox: str):
         await _handle_check_groups(interaction, username_roblox, config_type="reseller")
+        if interaction.guild and interaction.channel:
+            await refresh_channel_stickies(bot, interaction.guild.id, interaction.channel.id, force=True)
 
     async def _handle_commission(interaction: discord.Interaction, username_roblox: str):
         username_clean = sanitize_roblox_username(username_roblox) or username_roblox.strip()
