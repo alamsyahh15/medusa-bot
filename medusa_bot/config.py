@@ -460,5 +460,47 @@ def get_all_product_names() -> list[str]:
     return all_names
 
 
+def get_sticky_config(guild_id: int, sticky_type: str) -> Optional[dict]:
+    cfg = load_config().get(str(guild_id), {})
+    key = f"sticky_{sticky_type}"
+    sticky_cfg = cfg.get(key)
+    if not isinstance(sticky_cfg, dict) or not sticky_cfg.get("channel_id"):
+        return None
+    return sticky_cfg
 
 
+def set_sticky_config(
+    guild_id: int,
+    sticky_type: str,
+    channel_id: int,
+    message_id: Optional[int] = None,
+    extra: Optional[dict] = None,
+) -> dict:
+    config = load_config()
+    guild_key = str(guild_id)
+    if guild_key not in config:
+        config[guild_key] = {}
+    key = f"sticky_{sticky_type}"
+    current = config[guild_key].get(key)
+    if not isinstance(current, dict):
+        current = {}
+    current["channel_id"] = int(channel_id)
+    current["message_id"] = int(message_id) if message_id else None
+    if extra and isinstance(extra, dict):
+        current.update(extra)
+    config[guild_key][key] = current
+    save_config(config)
+    return current
+
+
+def delete_sticky_config(guild_id: int, sticky_type: str) -> Optional[dict]:
+    config = load_config()
+    guild_key = str(guild_id)
+    key = f"sticky_{sticky_type}"
+    if guild_key in config and key in config[guild_key]:
+        removed = config[guild_key].pop(key, None)
+        if not config[guild_key]:
+            del config[guild_key]
+        save_config(config)
+        return removed
+    return None

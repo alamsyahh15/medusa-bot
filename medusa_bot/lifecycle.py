@@ -4,6 +4,7 @@ from .config import get_autodelete_config, get_leaderboard_config, set_leaderboa
 from .helpers import (
     handle_autodelete_message,
     handle_raw_autodelete_message_edit,
+    handle_sticky_on_message,
     post_or_edit_leaderboard,
     sync_autodelete_automod_rule,
 )
@@ -35,7 +36,9 @@ def register_lifecycle(bot):
 
     @bot.listen("on_message")
     async def on_message_autodelete(message):
-        await handle_autodelete_message(message)
+        deleted = await handle_autodelete_message(message)
+        if not deleted:
+            await handle_sticky_on_message(bot, message)
 
     @bot.listen("on_message_edit")
     async def on_message_edit_autodelete(_before, after):

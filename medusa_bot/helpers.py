@@ -32,9 +32,12 @@ from .config import (
     ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API,
     ROBLOX_GROUP_IDS,
     ROBLOX_USER_LOOKUP_API,
+    delete_sticky_config,
     get_autodelete_config,
     get_order_role_ids,
+    get_sticky_config,
     set_autodelete_config,
+    set_sticky_config,
 )
 
 
@@ -1622,5 +1625,449 @@ async def sync_autodelete_automod_rule(bot, guild: discord.Guild) -> tuple[bool,
         return False, f"Gagal sinkronisasi Discord AutoMod Rule: {e}"
 
 
+STICKY_ELIGIBLE_BUTTON_ID = "medusa_sticky:check_eligible"
+STICKY_CALCULATE_BUTTON_ID = "medusa_sticky:calculate"
+MODAL_ELIGIBLE_ID = "medusa_modal:check_eligible"
+MODAL_CALCULATE_ID = "medusa_modal:calculate"
+
+_STICKY_LOCKS: dict[int, asyncio.Lock] = {}
+_STICKY_KNOWN_MESSAGE_IDS: set[int] = set()
+_CHANNEL_NEEDS_STICKY_REFRESH: dict[int, bool] = {}
 
 
+def _get_sticky_lock(channel_id: int) -> asyncio.Lock:
+    lock = _STICKY_LOCKS.get(channel_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _STICKY_LOCKS[channel_id] = lock
+    return lock
+
+
+def build_sticky_eligible_v2_payload() -> dict:
+    return {
+        "flags": 32768,  # IS_COMPONENTS_V2
+        "components": [
+            {
+                "type": 17,  # Container
+                "accent_color": 0x8B5CF6,
+                "components": [
+                    {
+                        "type": 9,  # Section
+                        "components": [
+                            {
+                                "type": 10,  # TextDisplay
+                                "content": "**Cek Eligibilitas**\nMasukkan username Roblox untuk melihat status tiap grup",
+                            }
+                        ],
+                        "accessory": {
+                            "type": 2,  # Button
+                            "style": 1,  # Primary (Blurple)
+                            "label": "Cek Status",
+                            "custom_id": STICKY_ELIGIBLE_BUTTON_ID,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def build_sticky_calculate_v2_payload() -> dict:
+    return {
+        "flags": 32768,  # IS_COMPONENTS_V2
+        "components": [
+            {
+                "type": 17,  # Container
+                "accent_color": 0x8B5CF6,
+                "components": [
+                    {
+                        "type": 9,  # Section
+                        "components": [
+                            {
+                                "type": 10,  # TextDisplay
+                                "content": "**Kalkulator Harga**\nMasukkan nominal untuk menghitung konversi Robux atau IDR",
+                            }
+                        ],
+                        "accessory": {
+                            "type": 2,  # Button
+                            "style": 1,  # Primary (Blurple)
+                            "label": "Calculate",
+                            "custom_id": STICKY_CALCULATE_BUTTON_ID,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+async def delete_sticky_message_by_id(bot, channel_id: int, message_id: Optional[int]):
+    if not bot or not channel_id or not message_id:
+        return
+    try:
+        route = discord.http.Route(
+            "DELETE",
+            "/channels/{channel_id}/messages/{message_id}",
+            channel_id=int(channel_id),
+            message_id=int(message_id),
+        )
+        await bot.http.request(route)
+    except (discord.NotFound, discord.Forbidden):
+        pass
+    except Exception as e:
+        log_debug("sticky.delete_error", channel_id=channel_id, message_id=message_id, error=str(e))
+
+
+async def send_sticky_message(bot, guild_id: int, channel_id: int, sticky_type: str) -> Optional[int]:
+    if not bot or not guild_id or not channel_id:
+        return None
+
+    current_cfg = get_sticky_config(guild_id, sticky_type) or {}
+    old_msg_id = current_cfg.get("message_id")
+    old_channel_id = current_cfg.get("channel_id") or channel_id
+
+    if old_msg_id:
+        await delete_sticky_message_by_id(bot, old_channel_id, old_msg_id)
+
+    if sticky_type == "eligible":
+        v2_payload = build_sticky_eligible_v2_payload()
+        fallback_title = "Cek Eligibilitas"
+        fallback_desc = "Masukkan username Roblox untuk melihat status tiap grup"
+        fallback_label = "Cek Status"
+        fallback_custom_id = STICKY_ELIGIBLE_BUTTON_ID
+    else:
+        v2_payload = build_sticky_calculate_v2_payload()
+        fallback_title = "Kalkulator Harga"
+        fallback_desc = "Masukkan nominal untuk menghitung konversi Robux atau IDR"
+        fallback_label = "Calculate"
+        fallback_custom_id = STICKY_CALCULATE_BUTTON_ID
+
+    route = discord.http.Route(
+        "POST",
+        "/channels/{channel_id}/messages",
+        channel_id=int(channel_id),
+    )
+    new_msg_id = None
+    try:
+        res = await bot.http.request(route, json=v2_payload)
+        if isinstance(res, dict) and res.get("id"):
+            new_msg_id = int(res["id"])
+    except Exception as e:
+        log_debug("sticky.v2_send_error", sticky_type=sticky_type, channel_id=channel_id, error=str(e))
+        try:
+            fallback_payload = {
+                "embeds": [
+                    {
+                        "title": fallback_title,
+                        "description": fallback_desc,
+                        "color": 0x8B5CF6,
+                    }
+                ],
+                "components": [
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 2,
+                                "style": 1,
+                                "label": fallback_label,
+                                "custom_id": fallback_custom_id,
+                            }
+                        ],
+                    }
+                ],
+            }
+            res = await bot.http.request(route, json=fallback_payload)
+            if isinstance(res, dict) and res.get("id"):
+                new_msg_id = int(res["id"])
+        except Exception as fallback_err:
+            log_debug("sticky.fallback_send_error", sticky_type=sticky_type, channel_id=channel_id, error=str(fallback_err))
+
+    if new_msg_id:
+        _STICKY_KNOWN_MESSAGE_IDS.add(new_msg_id)
+        if len(_STICKY_KNOWN_MESSAGE_IDS) > 500:
+            # Prevent unbounded growth
+            for old_id in list(_STICKY_KNOWN_MESSAGE_IDS)[:200]:
+                _STICKY_KNOWN_MESSAGE_IDS.discard(old_id)
+        set_sticky_config(guild_id, sticky_type, channel_id, message_id=new_msg_id)
+
+    return new_msg_id
+
+
+async def refresh_channel_stickies(bot, guild_id: int, channel_id: int, force: bool = False):
+    if not bot or not guild_id or not channel_id:
+        return
+
+    eligible_cfg = get_sticky_config(guild_id, "eligible")
+    calc_cfg = get_sticky_config(guild_id, "calculate")
+
+    has_eligible = bool(eligible_cfg and int(eligible_cfg.get("channel_id", 0)) == int(channel_id))
+    has_calc = bool(calc_cfg and int(calc_cfg.get("channel_id", 0)) == int(channel_id))
+
+    if not has_eligible and not has_calc:
+        return
+
+    if force:
+        _CHANNEL_NEEDS_STICKY_REFRESH[int(channel_id)] = True
+    else:
+        await asyncio.sleep(0.6)
+
+    lock = _get_sticky_lock(int(channel_id))
+    async with lock:
+        if not _CHANNEL_NEEDS_STICKY_REFRESH.get(int(channel_id), False):
+            return
+        _CHANNEL_NEEDS_STICKY_REFRESH[int(channel_id)] = False
+
+        if has_eligible:
+            await send_sticky_message(bot, guild_id, int(channel_id), "eligible")
+        if has_calc:
+            await send_sticky_message(bot, guild_id, int(channel_id), "calculate")
+
+
+async def handle_sticky_on_message(bot, message: discord.Message):
+    if not message or not message.guild or not message.channel:
+        return
+
+    msg_id = getattr(message, "id", None)
+    if not msg_id or msg_id in _STICKY_KNOWN_MESSAGE_IDS:
+        return
+
+    guild_id = message.guild.id
+    channel_id = message.channel.id
+
+    eligible_cfg = get_sticky_config(guild_id, "eligible")
+    calc_cfg = get_sticky_config(guild_id, "calculate")
+
+    has_eligible = bool(eligible_cfg and int(eligible_cfg.get("channel_id", 0)) == int(channel_id))
+    has_calc = bool(calc_cfg and int(calc_cfg.get("channel_id", 0)) == int(channel_id))
+
+    if not has_eligible and not has_calc:
+        return
+
+    if has_eligible and eligible_cfg.get("message_id") and int(eligible_cfg["message_id"]) == int(msg_id):
+        _STICKY_KNOWN_MESSAGE_IDS.add(int(msg_id))
+        return
+
+    if has_calc and calc_cfg.get("message_id") and int(calc_cfg["message_id"]) == int(msg_id):
+        _STICKY_KNOWN_MESSAGE_IDS.add(int(msg_id))
+        return
+
+    _CHANNEL_NEEDS_STICKY_REFRESH[int(channel_id)] = True
+    await refresh_channel_stickies(bot, guild_id, channel_id, force=False)
+
+
+async def open_eligible_modal(bot, interaction: discord.Interaction):
+    route = discord.http.Route(
+        "POST",
+        "/interactions/{interaction_id}/{interaction_token}/callback",
+        interaction_id=interaction.id,
+        interaction_token=interaction.token,
+    )
+    modal_payload = {
+        "type": 9,  # MODAL
+        "data": {
+            "custom_id": MODAL_ELIGIBLE_ID,
+            "title": "Cek Eligibilitas",
+            "components": [
+                {
+                    "type": 1,  # ActionRow
+                    "components": [
+                        {
+                            "type": 4,  # TextInput
+                            "custom_id": "username_roblox",
+                            "label": "Username Roblox",
+                            "style": 1,  # Short
+                            "placeholder": "Masukkan username Roblox kamu...",
+                            "required": True,
+                            "min_length": 1,
+                            "max_length": 64,
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+    await bot.http.request(route, json=modal_payload)
+
+
+async def open_calculate_modal(bot, interaction: discord.Interaction):
+    route = discord.http.Route(
+        "POST",
+        "/interactions/{interaction_id}/{interaction_token}/callback",
+        interaction_id=interaction.id,
+        interaction_token=interaction.token,
+    )
+    # Primary modal payload using Discord's Label (type 18) + String Select dropdown (type 3)
+    modal_v2_payload = {
+        "type": 9,  # MODAL
+        "data": {
+            "custom_id": MODAL_CALCULATE_ID,
+            "title": "Kalkulator Harga Robux & IDR",
+            "components": [
+                {
+                    "type": 18,  # Label
+                    "label": "Amount / Nominal",
+                    "description": "Masukkan jumlah nominal (contoh: 500, 15000, 50k, 100rb)",
+                    "component": {
+                        "type": 4,  # TextInput
+                        "custom_id": "amount",
+                        "style": 1,  # Short
+                        "placeholder": "Contoh: 500 atau 100000",
+                        "required": True,
+                        "min_length": 1,
+                        "max_length": 32,
+                    },
+                },
+                {
+                    "type": 18,  # Label
+                    "label": "Currency",
+                    "description": "Pilih mata uang (Robux atau IDR)",
+                    "component": {
+                        "type": 3,  # StringSelect
+                        "custom_id": "currency",
+                        "placeholder": "Pilih Robux atau IDR...",
+                        "min_values": 1,
+                        "max_values": 1,
+                        "required": True,
+                        "options": [
+                            {
+                                "label": "Robux",
+                                "value": "robux",
+                                "description": "Hitung dari Robux ke Rupiah (IDR)",
+                                "emoji": {"name": "💎"},
+                                "default": True,
+                            },
+                            {
+                                "label": "IDR",
+                                "value": "idr",
+                                "description": "Hitung dari Rupiah (IDR) ke Robux",
+                                "emoji": {"name": "💵"},
+                            },
+                        ],
+                    },
+                },
+            ],
+        },
+    }
+    try:
+        await bot.http.request(route, json=modal_v2_payload)
+    except Exception as e:
+        log_debug("modal.calculate_v2_fallback", error=str(e))
+        fallback_modal_payload = {
+            "type": 9,  # MODAL
+            "data": {
+                "custom_id": MODAL_CALCULATE_ID,
+                "title": "Kalkulator Harga Robux & IDR",
+                "components": [
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 4,
+                                "custom_id": "amount",
+                                "label": "Amount / Nominal",
+                                "style": 1,
+                                "placeholder": "Contoh: 500, 15k, atau 100000",
+                                "required": True,
+                                "max_length": 32,
+                            }
+                        ],
+                    },
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 4,
+                                "custom_id": "currency",
+                                "label": "Currency (Robux atau IDR)",
+                                "style": 1,
+                                "value": "Robux",
+                                "placeholder": "Ketik Robux atau IDR",
+                                "required": True,
+                                "max_length": 16,
+                            }
+                        ],
+                    },
+                ],
+            },
+        }
+        await bot.http.request(route, json=fallback_modal_payload)
+
+
+def extract_modal_values(interaction_data: dict) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not isinstance(interaction_data, dict):
+        return values
+
+    for comp in interaction_data.get("components") or []:
+        if not isinstance(comp, dict):
+            continue
+        comp_type = comp.get("type")
+        if comp_type == 18:
+            # Label wrapper component
+            inner = comp.get("component")
+            if isinstance(inner, dict):
+                cid = inner.get("custom_id")
+                if not cid:
+                    continue
+                if "value" in inner and inner["value"] is not None:
+                    values[cid] = str(inner["value"]).strip()
+                elif "values" in inner and isinstance(inner["values"], list) and inner["values"]:
+                    values[cid] = str(inner["values"][0]).strip()
+        elif comp_type == 1:
+            # Standard ActionRow
+            for inner in comp.get("components") or []:
+                if not isinstance(inner, dict):
+                    continue
+                cid = inner.get("custom_id")
+                if not cid:
+                    continue
+                if "value" in inner and inner["value"] is not None:
+                    values[cid] = str(inner["value"]).strip()
+                elif "values" in inner and isinstance(inner["values"], list) and inner["values"]:
+                    values[cid] = str(inner["values"][0]).strip()
+    return values
+
+
+def parse_calc_amount_with_currency(raw_amount: str, raw_currency: Optional[str] = None) -> Optional[tuple[str, int]]:
+    cleaned_amount = (raw_amount or "").lower().strip()
+    cleaned_amount = (
+        cleaned_amount.replace("rp", "")
+        .replace("idr", "")
+        .replace("robux", "")
+        .replace("r$", "")
+        .replace(".", "")
+        .replace(",", "")
+        .replace(" ", "")
+    )
+    if not cleaned_amount:
+        return None
+
+    currency_norm = (raw_currency or "").lower().strip()
+    if currency_norm in ("idr", "rupiah", "rp"):
+        calc_mode = "idr"
+    elif currency_norm in ("robux", "r$", "rbx"):
+        calc_mode = "robux"
+    else:
+        calc_mode = None
+
+    multiplier = 1
+    if cleaned_amount.endswith("rb"):
+        cleaned_amount = cleaned_amount[:-2]
+        multiplier = 1000
+        if calc_mode is None:
+            calc_mode = "idr"
+    elif cleaned_amount.endswith("k"):
+        cleaned_amount = cleaned_amount[:-1]
+        multiplier = 1000
+        if calc_mode is None:
+            calc_mode = "robux"
+
+    if not cleaned_amount.isdigit():
+        return None
+
+    amount = int(cleaned_amount) * multiplier
+    if calc_mode is None:
+        calc_mode = "robux"
+
+    return calc_mode, amount

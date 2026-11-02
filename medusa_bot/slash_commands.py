@@ -16,6 +16,7 @@ from .config import (
     delete_leaderboard_config,
     delete_merchant_product,
     delete_rating_log_config,
+    delete_sticky_config,
     get_all_product_names,
     get_autodelete_config,
     get_guild_config,
@@ -25,6 +26,7 @@ from .config import (
     get_merchant_product_names,
     get_order_role_ids,
     get_rating_log_config,
+    get_sticky_config,
     has_qris_config,
     load_merchant_config,
     set_autodelete_config,
@@ -33,8 +35,13 @@ from .config import (
     set_merchant_config,
     set_order_role_config,
     set_rating_log_config,
+    set_sticky_config,
 )
 from .helpers import (
+    MODAL_CALCULATE_ID,
+    MODAL_ELIGIBLE_ID,
+    STICKY_CALCULATE_BUTTON_ID,
+    STICKY_ELIGIBLE_BUTTON_ID,
     apply_admin_fee,
     build_calc_result_embed,
     build_calc_usage_embed,
@@ -44,7 +51,9 @@ from .helpers import (
     build_roblox_group_share_url,
     calculate_qris_admin_fee,
     calculate_qris_total_with_admin_fee,
+    delete_sticky_message_by_id,
     ensure_order_interaction_access,
+    extract_modal_values,
     extract_ticket_identity,
     fetch_and_render_leaderboard,
     fetch_leaderboard_data,
@@ -67,14 +76,19 @@ from .helpers import (
     log_debug,
     lookup_roblox_user,
     make_dynamic_qris,
+    open_calculate_modal,
+    open_eligible_modal,
+    parse_calc_amount_with_currency,
     parse_calc_value,
     parse_merchant_name_from_qris_payload,
     parse_robux_amount_input,
     place_external_order,
     place_marketplace_order,
+    refresh_channel_stickies,
     resolve_text_channel,
     sanitize_roblox_username,
     send_interaction_message,
+    send_sticky_message,
     sync_autodelete_automod_rule,
     upload_marketplace_payment_proof,
     upload_payment_proof,
@@ -996,6 +1010,8 @@ def register_slash_commands(bot):
         embed.add_field(name="/profile 🎃", value="Cek profil Halloween dan total perolehan Pumpkin dari invite server kamu.", inline=False)
         embed.add_field(name="/setrole 🔒", value="Kelola beberapa role untuk akses `/order`, `/payment`, dan `Apps > Upload Payment` dengan action `add`, `remove`, atau `clear`.", inline=False)
         embed.add_field(name="/setup-autodelete 🔒", value="Aktifkan/matikan auto-delete pesan yang mengandung URL & `discord.gg` serta atur role whitelist (`ignore_role`). (Admin only)", inline=False)
+        embed.add_field(name="/setup-egilible 🔒", value="Pasang/matikan sticky message & tombol pop-up Cek Eligibilitas (`/check`). (Admin only)", inline=False)
+        embed.add_field(name="/setup-calculate 🔒", value="Pasang/matikan sticky message & tombol pop-up Kalkulator Robux/IDR (`/calc`). (Admin only)", inline=False)
         embed.add_field(name="/qrissetup 🔒", value="Setup QRIS server ini (Payload Indonesia & Luar Negeri). (Admin only)", inline=False)
         embed.add_field(name="/qrisinfo", value="Lihat konfigurasi QRIS.", inline=False)
         embed.add_field(name="/qrisreset 🔒", value="Hapus konfigurasi QRIS. (Admin only)", inline=False)
@@ -2309,6 +2325,352 @@ def register_slash_commands(bot):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    async def _handle_setup_sticky_eligible(
+        interaction: discord.Interaction,
+        channel: Optional[app_commands.AppCommandChannel] = None,
+        action: Optional[app_commands.Choice[str]] = None,
+        tipe_grup: Optional[app_commands.Choice[str]] = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ Perintah ini hanya dapat digunakan di dalam server Discord.",
+                ephemeral=True,
+            )
+            return
 
+        action_val = action.value if action else "enable"
+        group_type = tipe_grup.value if tipe_grup else "community"
 
+        if action_val == "disable":
+            current_cfg = get_sticky_config(interaction.guild.id, "eligible")
+            if not current_cfg:
+                await interaction.response.send_message(
+                    "⚠️ Sticky message **Cek Eligibilitas** belum pernah dipasang di server ini.",
+                    ephemeral=True,
+                )
+                return
 
+            await interaction.response.defer(ephemeral=True)
+            old_channel_id = current_cfg.get("channel_id")
+            old_msg_id = current_cfg.get("message_id")
+            if old_channel_id and old_msg_id:
+                await delete_sticky_message_by_id(bot, old_channel_id, old_msg_id)
+            delete_sticky_config(interaction.guild.id, "eligible")
+
+            old_channel = interaction.guild.get_channel(int(old_channel_id)) if old_channel_id else None
+            embed = discord.Embed(title="🗑️ Sticky Cek Eligibilitas Dimatikan", color=0xE67E22)
+            embed.add_field(
+                name="Channel Sebelumnya",
+                value=old_channel.mention if old_channel else str(old_channel_id),
+                inline=False,
+            )
+            embed.add_field(
+                name="Status",
+                value="Sticky message **Cek Eligibilitas** berhasil dihapus dan dinonaktifkan.",
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        target_channel = (
+            resolve_text_channel(channel)
+            if channel is not None
+            else (interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None)
+        )
+        if target_channel is None:
+            await interaction.response.send_message(
+                "❌ Pilih text channel biasa atau jalankan command ini langsung di dalam text channel.",
+                ephemeral=True,
+            )
+            return
+
+        permissions = target_channel.permissions_for(interaction.guild.me)
+        if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+            await interaction.response.send_message(
+                f"❌ Saya belum punya izin yang cukup di {target_channel.mention}. Pastikan ada izin `View Channel`, `Send Messages`, dan `Embed Links`.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        set_sticky_config(
+            interaction.guild.id,
+            "eligible",
+            target_channel.id,
+            extra={"config_type": group_type},
+        )
+        msg_id = await send_sticky_message(bot, interaction.guild.id, target_channel.id, "eligible")
+        if not msg_id:
+            await interaction.followup.send(
+                f"❌ Gagal mengirim sticky message ke {target_channel.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(title="✅ Sticky Cek Eligibilitas Aktif!", color=0x2ECC71)
+        embed.add_field(name="Channel", value=target_channel.mention, inline=True)
+        embed.add_field(
+            name="Mode Cek",
+            value="Reseller Groups (`/check-reseller`)" if group_type == "reseller" else "Community Groups (`/check`)",
+            inline=True,
+        )
+        embed.add_field(
+            name="Cara Kerja",
+            value="Pesan tombol **Cek Status** akan selalu menempel (sticky) di bagian paling bawah channel dan menampilkan pop-up input Username Roblox ketika diklik.",
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @bot.tree.command(
+        name="setup-egilible",
+        description="Pasang/matikan sticky message & tombol pop-up Cek Eligibilitas (/check) (Admin only)",
+    )
+    @app_commands.describe(
+        channel="Channel tempat sticky message dipasang (kosongkan untuk channel ini)",
+        action="Pilih enable (pasang) atau disable (matikan/hapus)",
+        tipe_grup="Pilih grup yang dicek: community (/check) atau reseller (/check-reseller)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="enable (Pasang Sticky)", value="enable"),
+            app_commands.Choice(name="disable (Matikan & Hapus Sticky)", value="disable"),
+        ],
+        tipe_grup=[
+            app_commands.Choice(name="community (Default /check)", value="community"),
+            app_commands.Choice(name="reseller (/check-reseller)", value="reseller"),
+        ],
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def setup_egilible_slash(
+        interaction: discord.Interaction,
+        channel: Optional[app_commands.AppCommandChannel] = None,
+        action: Optional[app_commands.Choice[str]] = None,
+        tipe_grup: Optional[app_commands.Choice[str]] = None,
+    ):
+        await _handle_setup_sticky_eligible(interaction, channel=channel, action=action, tipe_grup=tipe_grup)
+
+    @bot.tree.command(
+        name="setup-eligible",
+        description="Pasang/matikan sticky message & tombol pop-up Cek Eligibilitas (/check) (Admin only)",
+    )
+    @app_commands.describe(
+        channel="Channel tempat sticky message dipasang (kosongkan untuk channel ini)",
+        action="Pilih enable (pasang) atau disable (matikan/hapus)",
+        tipe_grup="Pilih grup yang dicek: community (/check) atau reseller (/check-reseller)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="enable (Pasang Sticky)", value="enable"),
+            app_commands.Choice(name="disable (Matikan & Hapus Sticky)", value="disable"),
+        ],
+        tipe_grup=[
+            app_commands.Choice(name="community (Default /check)", value="community"),
+            app_commands.Choice(name="reseller (/check-reseller)", value="reseller"),
+        ],
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def setup_eligible_slash(
+        interaction: discord.Interaction,
+        channel: Optional[app_commands.AppCommandChannel] = None,
+        action: Optional[app_commands.Choice[str]] = None,
+        tipe_grup: Optional[app_commands.Choice[str]] = None,
+    ):
+        await _handle_setup_sticky_eligible(interaction, channel=channel, action=action, tipe_grup=tipe_grup)
+
+    @bot.tree.command(
+        name="setup-calculate",
+        description="Pasang/matikan sticky message & tombol pop-up Kalkulator Robux/IDR (/calc) (Admin only)",
+    )
+    @app_commands.describe(
+        channel="Channel tempat sticky message dipasang (kosongkan untuk channel ini)",
+        action="Pilih enable (pasang) atau disable (matikan/hapus)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="enable (Pasang Sticky)", value="enable"),
+            app_commands.Choice(name="disable (Matikan & Hapus Sticky)", value="disable"),
+        ]
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def setup_calculate_slash(
+        interaction: discord.Interaction,
+        channel: Optional[app_commands.AppCommandChannel] = None,
+        action: Optional[app_commands.Choice[str]] = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ Perintah ini hanya dapat digunakan di dalam server Discord.",
+                ephemeral=True,
+            )
+            return
+
+        action_val = action.value if action else "enable"
+        if action_val == "disable":
+            current_cfg = get_sticky_config(interaction.guild.id, "calculate")
+            if not current_cfg:
+                await interaction.response.send_message(
+                    "⚠️ Sticky message **Kalkulator Harga** belum pernah dipasang di server ini.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            old_channel_id = current_cfg.get("channel_id")
+            old_msg_id = current_cfg.get("message_id")
+            if old_channel_id and old_msg_id:
+                await delete_sticky_message_by_id(bot, old_channel_id, old_msg_id)
+            delete_sticky_config(interaction.guild.id, "calculate")
+
+            old_channel = interaction.guild.get_channel(int(old_channel_id)) if old_channel_id else None
+            embed = discord.Embed(title="🗑️ Sticky Kalkulator Harga Dimatikan", color=0xE67E22)
+            embed.add_field(
+                name="Channel Sebelumnya",
+                value=old_channel.mention if old_channel else str(old_channel_id),
+                inline=False,
+            )
+            embed.add_field(
+                name="Status",
+                value="Sticky message **Kalkulator Harga** berhasil dihapus dan dinonaktifkan.",
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        target_channel = (
+            resolve_text_channel(channel)
+            if channel is not None
+            else (interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None)
+        )
+        if target_channel is None:
+            await interaction.response.send_message(
+                "❌ Pilih text channel biasa atau jalankan command ini langsung di dalam text channel.",
+                ephemeral=True,
+            )
+            return
+
+        permissions = target_channel.permissions_for(interaction.guild.me)
+        if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+            await interaction.response.send_message(
+                f"❌ Saya belum punya izin yang cukup di {target_channel.mention}. Pastikan ada izin `View Channel`, `Send Messages`, dan `Embed Links`.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        set_sticky_config(interaction.guild.id, "calculate", target_channel.id)
+        msg_id = await send_sticky_message(bot, interaction.guild.id, target_channel.id, "calculate")
+        if not msg_id:
+            await interaction.followup.send(
+                f"❌ Gagal mengirim sticky message ke {target_channel.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(title="✅ Sticky Kalkulator Harga Aktif!", color=0x2ECC71)
+        embed.add_field(name="Channel", value=target_channel.mention, inline=True)
+        embed.add_field(
+            name="Cara Kerja",
+            value="Pesan tombol **Calculate** akan selalu menempel (sticky) di bagian paling bawah channel dan menampilkan pop-up **Amount** + dropdown **Currency (Robux / IDR)** ketika diklik.",
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @bot.tree.command(name="calculate", description="Kalkulasi Robux dan IDR")
+    @app_commands.describe(
+        amount="Contoh: 500, 15k, atau 100000",
+        currency="Pilih mata uang asal: Robux atau IDR (opsional)",
+    )
+    @app_commands.choices(
+        currency=[
+            app_commands.Choice(name="Robux", value="robux"),
+            app_commands.Choice(name="IDR", value="idr"),
+        ]
+    )
+    async def calculate_slash(
+        interaction: discord.Interaction,
+        amount: Optional[str] = None,
+        currency: Optional[app_commands.Choice[str]] = None,
+    ):
+        if not amount:
+            await open_calculate_modal(bot, interaction)
+            return
+
+        parsed = parse_calc_amount_with_currency(amount, currency.value if currency else None)
+        if not parsed:
+            await interaction.response.send_message(
+                "❌ Format tidak valid. Contoh: `/calculate amount:500 currency:Robux` atau `/calculate amount:100000 currency:IDR`",
+                ephemeral=True,
+            )
+            return
+
+        calc_mode, num_amount = parsed
+        if num_amount <= 0:
+            await interaction.response.send_message("❌ Nilai harus lebih dari 0.", ephemeral=True)
+            return
+        if calc_mode == "robux" and num_amount < CALC_MIN_ROBUX:
+            await interaction.response.send_message(
+                f"❌ Minimum kalkulasi adalah **{CALC_MIN_ROBUX} Robux**.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(embed=build_calc_result_embed(calc_mode, num_amount))
+        if interaction.guild and interaction.channel:
+            await refresh_channel_stickies(bot, interaction.guild.id, interaction.channel.id, force=True)
+
+    @bot.listen("on_interaction")
+    async def on_sticky_and_modal_interaction(interaction: discord.Interaction):
+        try:
+            data = interaction.data or {}
+            custom_id = data.get("custom_id", "")
+            if not custom_id:
+                return
+
+            if interaction.type == discord.InteractionType.component:
+                if custom_id == STICKY_ELIGIBLE_BUTTON_ID:
+                    await open_eligible_modal(bot, interaction)
+                elif custom_id == STICKY_CALCULATE_BUTTON_ID:
+                    await open_calculate_modal(bot, interaction)
+
+            elif interaction.type == discord.InteractionType.modal_submit:
+                if custom_id == MODAL_ELIGIBLE_ID:
+                    values = extract_modal_values(data)
+                    username_roblox = values.get("username_roblox", "")
+                    config_type = "community"
+                    if interaction.guild:
+                        sticky_cfg = get_sticky_config(interaction.guild.id, "eligible") or {}
+                        config_type = sticky_cfg.get("config_type", "community")
+                    if config_type == "community" and not get_configured_roblox_groups() and get_configured_reseller_groups():
+                        config_type = "reseller"
+
+                    await _handle_check_groups(interaction, username_roblox, config_type=config_type)
+                    if interaction.guild and interaction.channel:
+                        await refresh_channel_stickies(bot, interaction.guild.id, interaction.channel.id, force=True)
+
+                elif custom_id == MODAL_CALCULATE_ID:
+                    values = extract_modal_values(data)
+                    raw_amount = values.get("amount", "")
+                    raw_currency = values.get("currency", "robux")
+                    parsed = parse_calc_amount_with_currency(raw_amount, raw_currency)
+                    if not parsed:
+                        await interaction.response.send_message(
+                            "❌ Format nominal tidak valid. Contoh input: `500`, `15000`, `50k`, atau `100rb`.",
+                            ephemeral=True,
+                        )
+                        return
+
+                    calc_mode, amount = parsed
+                    if amount <= 0:
+                        await interaction.response.send_message("❌ Nilai harus lebih dari 0.", ephemeral=True)
+                        return
+                    if calc_mode == "robux" and amount < CALC_MIN_ROBUX:
+                        await interaction.response.send_message(
+                            f"❌ Minimum kalkulasi adalah **{CALC_MIN_ROBUX} Robux**.",
+                            ephemeral=True,
+                        )
+                        return
+
+                    await interaction.response.send_message(embed=build_calc_result_embed(calc_mode, amount))
+                    if interaction.guild and interaction.channel:
+                        await refresh_channel_stickies(bot, interaction.guild.id, interaction.channel.id, force=True)
+        except Exception as e:
+            log_debug("sticky.interaction_error", error=str(e))
