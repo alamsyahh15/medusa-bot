@@ -34,8 +34,12 @@ from .config import (
     ROBLOX_USER_LOOKUP_API,
     delete_sticky_config,
     get_autodelete_config,
+    get_dm_order_session,
+    get_guild_config,
     get_order_role_ids,
     get_sticky_config,
+    load_config,
+    save_dm_order_session,
     set_autodelete_config,
     set_sticky_config,
 )
@@ -2069,3 +2073,410 @@ def parse_calc_amount_with_currency(raw_amount: str, raw_currency: Optional[str]
         calc_mode = "robux"
 
     return calc_mode, amount
+
+
+DM_ORDER_QRIS_SELECT_ID = "medusa_dm_order:qris_select"
+DM_ORDER_UPLOAD_BUTTON_ID = "medusa_dm_order:upload_payment"
+MODAL_DM_PAYMENT_PREFIX = "medusa_modal:dm_payment"
+
+_PENDING_DM_PAYMENT_UPLOADS: dict[int, dict] = {}
+
+
+def set_pending_dm_payment_upload(user_id: int, session_data: dict):
+    _PENDING_DM_PAYMENT_UPLOADS[int(user_id)] = session_data
+
+
+def get_pending_dm_payment_upload(user_id: int) -> Optional[dict]:
+    return _PENDING_DM_PAYMENT_UPLOADS.get(int(user_id))
+
+
+def clear_pending_dm_payment_upload(user_id: int):
+    _PENDING_DM_PAYMENT_UPLOADS.pop(int(user_id), None)
+
+
+def build_dm_order_embed(
+    order_data: dict,
+    selected_region: Optional[str] = None,
+    has_qris_image: bool = False,
+    payment_uploaded: bool = False,
+) -> discord.Embed:
+    order_number = order_data.get("order_number", "-")
+    username = order_data.get("username", "-")
+    amount = order_data.get("amount", 0)
+    method = order_data.get("method", "-")
+    total_price = int(order_data.get("total_price", 0) or 0)
+    status = "paid / done" if payment_uploaded else order_data.get("status", "-")
+    order_url = (order_data.get("order_url") or "").strip().strip("`").strip()
+    avatar_url = (order_data.get("avatar") or "").strip().strip("`").strip()
+
+    if payment_uploaded:
+        desc = "✅ **Bukti pembayaran telah berhasil diupload!** Terima kasih atas pesanan kamu."
+    elif selected_region:
+        desc = (
+            "Silakan scan kode **QRIS** di bawah untuk menyelesaikan pembayaran, "
+            "lalu klik tombol **Upload Bukti Pembayaran** di bawah untuk mengunggah screenshot bukti transfer."
+        )
+    else:
+        desc = (
+            f"{order_data.get('message', 'External order placed successfully.')}\n\n"
+            "Silakan pilih **Region Pembayaran QRIS** (**Indonesia** / **Luar Negeri**) pada dropdown di bawah untuk menampilkan kode QRIS."
+        )
+
+    embed = discord.Embed(
+        title="✅ Order berhasil dibuat",
+        description=desc,
+        color=0x2ECC71 if (selected_region or payment_uploaded) else 0x1A1F5E,
+    )
+    embed.add_field(name="Order Number", value=str(order_number), inline=True)
+    embed.add_field(name="Username", value=str(username), inline=True)
+    embed.add_field(name="Amount", value=f"{amount} Robux", inline=True)
+    embed.add_field(name="Method", value=str(method), inline=True)
+    embed.add_field(name="Total Price", value=format_rupiah(total_price), inline=True)
+
+    if total_price > 0:
+        qris_total = calculate_qris_total_with_admin_fee(total_price)
+        embed.add_field(name="QRIS Total", value=format_rupiah(qris_total), inline=True)
+
+    if selected_region:
+        region_label = "🌐 Luar Negeri" if selected_region == "luar_negeri" else "🇮🇩 Indonesia"
+        embed.add_field(name="Region QRIS", value=region_label, inline=True)
+
+    embed.add_field(name="Status", value=str(status), inline=True)
+
+    if order_url:
+        embed.add_field(name="Order URL", value=f"[Klik untuk buka order]({order_url})", inline=False)
+
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+
+    if has_qris_image:
+        embed.set_image(url="attachment://order_qris.png")
+
+    if payment_uploaded:
+        embed.set_footer(text="Pembayaran telah diupload • MedusaBlox")
+    elif selected_region:
+        embed.set_footer(text="Klik tombol 'Upload Bukti Pembayaran' setelah selesai transfer")
+    else:
+        embed.set_footer(text="Pilih region pembayaran QRIS di bawah untuk menampilkan kode QRIS")
+
+    return embed
+
+
+def build_dm_order_view(
+    has_foreigner: bool = True,
+    selected_region: Optional[str] = None,
+    show_upload_button: bool = False,
+    payment_uploaded: bool = False,
+) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+
+    options = [
+        discord.SelectOption(
+            label="Indonesia",
+            value="indonesia",
+            emoji="🇮🇩",
+            description="QRIS Domestik (BCA, ShopeePay, Dana, GoPay, OVO, dll.)",
+            default=(selected_region == "indonesia"),
+        ),
+        discord.SelectOption(
+            label="Luar Negeri",
+            value="luar_negeri",
+            emoji="🌐",
+            description="QRIS Luar Negeri (Cross-Border)" if has_foreigner else "Belum disetup di server ini",
+            default=(selected_region == "luar_negeri"),
+        ),
+    ]
+    select = discord.ui.Select(
+        custom_id=DM_ORDER_QRIS_SELECT_ID,
+        placeholder="Pilih region pembayaran QRIS...",
+        min_values=1,
+        max_values=1,
+        options=options,
+        disabled=payment_uploaded,
+        row=0,
+    )
+    view.add_item(select)
+
+    if show_upload_button or payment_uploaded:
+        btn_label = "✅ Bukti Pembayaran Terupload" if payment_uploaded else "Upload Bukti Pembayaran"
+        btn_emoji = None if payment_uploaded else "📤"
+        btn_style = discord.ButtonStyle.secondary if payment_uploaded else discord.ButtonStyle.success
+        upload_btn = discord.ui.Button(
+            label=btn_label,
+            emoji=btn_emoji,
+            style=btn_style,
+            custom_id=DM_ORDER_UPLOAD_BUTTON_ID,
+            disabled=payment_uploaded,
+            row=1,
+        )
+        view.add_item(upload_btn)
+
+    view.stop()
+    return view
+
+
+def extract_dm_order_metadata_from_message(message: Optional[discord.Message]) -> dict:
+    if not message:
+        return {}
+    session = get_dm_order_session(message.id)
+    if isinstance(session, dict) and session.get("order_number"):
+        return dict(session)
+
+    meta: dict = {
+        "order_number": "-",
+        "username": "-",
+        "amount": 0,
+        "method": "-",
+        "total_price": 0,
+        "status": "-",
+        "order_url": "",
+        "avatar": "",
+        "guild_id": None,
+        "channel_id": None,
+        "selected_region": None,
+    }
+    if message.embeds:
+        embed = message.embeds[0]
+        if embed.thumbnail and embed.thumbnail.url:
+            meta["avatar"] = embed.thumbnail.url
+        for field in embed.fields:
+            fname = (field.name or "").strip().lower()
+            fval = (field.value or "").strip()
+            if fname == "order number":
+                meta["order_number"] = fval.strip("`").strip()
+            elif fname == "username":
+                meta["username"] = fval.strip("`").strip()
+            elif fname == "amount":
+                digits = "".join(ch for ch in fval if ch.isdigit())
+                meta["amount"] = int(digits) if digits else fval
+            elif fname == "method":
+                meta["method"] = fval
+            elif fname == "total price":
+                digits = "".join(ch for ch in fval if ch.isdigit())
+                meta["total_price"] = int(digits) if digits else 0
+            elif fname == "status":
+                meta["status"] = fval
+            elif fname == "order url":
+                m = re.search(r"\((https?://[^\s)]+)\)", fval)
+                meta["order_url"] = m.group(1) if m else fval
+            elif fname == "region qris":
+                meta["selected_region"] = "luar_negeri" if "luar negeri" in fval.lower() else "indonesia"
+
+    # Fallback guild_id from config if not in session
+    if not meta.get("guild_id"):
+        all_cfg = load_config()
+        for gk, gval in all_cfg.items():
+            if not str(gk).startswith("__") and isinstance(gval, dict) and gval.get("static_qris"):
+                try:
+                    meta["guild_id"] = int(gk)
+                    break
+                except (ValueError, TypeError):
+                    pass
+    return meta
+
+
+async def open_dm_payment_modal(
+    bot,
+    interaction: discord.Interaction,
+    dm_message_id: int,
+    order_number: str,
+) -> bool:
+    route = discord.http.Route(
+        "POST",
+        "/interactions/{interaction_id}/{interaction_token}/callback",
+        interaction_id=interaction.id,
+        interaction_token=interaction.token,
+    )
+    modal_payload = {
+        "type": 9,  # MODAL
+        "data": {
+            "custom_id": f"{MODAL_DM_PAYMENT_PREFIX}:{dm_message_id}",
+            "title": f"Upload Bukti — {order_number}"[:45],
+            "components": [
+                {
+                    "type": 18,  # Label
+                    "label": "Bukti Pembayaran (Gambar)",
+                    "description": f"Pilih gambar screenshot bukti pembayaran untuk order {order_number}",
+                    "component": {
+                        "type": 19,  # FileUpload
+                        "custom_id": "payment_image",
+                        "min_values": 1,
+                        "max_values": 1,
+                        "required": True,
+                    },
+                }
+            ],
+        },
+    }
+    try:
+        await bot.http.request(route, json=modal_payload)
+        return True
+    except Exception as e:
+        log_debug("modal.dm_payment_fileupload_fallback", error=str(e), order_number=order_number)
+        return False
+
+
+def extract_modal_attachment(interaction_data: dict) -> Optional[dict]:
+    if not isinstance(interaction_data, dict):
+        return None
+    resolved = interaction_data.get("resolved")
+    if not isinstance(resolved, dict):
+        return None
+    attachments = resolved.get("attachments")
+    if not isinstance(attachments, dict) or not attachments:
+        return None
+
+    # Check if component specifies attachment id
+    for comp in interaction_data.get("components") or []:
+        if not isinstance(comp, dict):
+            continue
+        inner = comp.get("component") if comp.get("type") == 18 else None
+        if isinstance(inner, dict) and inner.get("type") == 19:
+            vals = inner.get("values") or []
+            for att_id in vals:
+                att_obj = attachments.get(str(att_id))
+                if isinstance(att_obj, dict) and (att_obj.get("url") or att_obj.get("proxy_url")):
+                    return att_obj
+
+    # Fallback: return first attachment in resolved.attachments
+    for att_obj in attachments.values():
+        if isinstance(att_obj, dict) and (att_obj.get("url") or att_obj.get("proxy_url")):
+            return att_obj
+    return None
+
+
+async def process_dm_order_payment_upload(
+    bot,
+    user: Union[discord.User, discord.Member],
+    session_meta: dict,
+    image_url: str,
+    dm_message_id: Optional[int] = None,
+    dm_channel_id: Optional[int] = None,
+) -> tuple[bool, str, Optional[discord.Embed]]:
+    order_number = (session_meta.get("order_number") or "").strip()
+    if not order_number or order_number == "-":
+        return False, "Order number tidak ditemukan pada pesan ini.", None
+
+    try:
+        upload_response = await upload_payment_proof(bot.http_session, order_number, image_url)
+    except Exception as e:
+        return False, f"Gagal upload payment proof: {e}", None
+
+    if not upload_response or not upload_response.get("success"):
+        error_message = (
+            upload_response["message"]
+            if upload_response and upload_response.get("message")
+            else "Gagal upload payment proof."
+        )
+        return False, error_message, None
+
+    clear_pending_dm_payment_upload(user.id)
+
+    upload_data = upload_response.get("data") or {}
+    resolved_order_num = upload_data.get("order_number", order_number)
+    resolved_status = upload_data.get("status", "done")
+
+    dm_confirm_embed = discord.Embed(
+        title="✅ Payment berhasil diupload",
+        description=upload_response.get("message", "Payment uploaded successfully."),
+        color=0x2ECC71,
+    )
+    dm_confirm_embed.add_field(name="Order Number", value=resolved_order_num, inline=True)
+    dm_confirm_embed.add_field(name="Status", value=resolved_status, inline=True)
+    dm_confirm_embed.add_field(name="Image URL", value=f"[Klik untuk buka bukti bayar]({image_url})", inline=False)
+    dm_confirm_embed.set_image(url=image_url)
+
+    # Update original DM order message button to disabled
+    target_dm_msg_id = dm_message_id or session_meta.get("dm_message_id")
+    target_dm_ch_id = dm_channel_id or session_meta.get("dm_channel_id")
+    if target_dm_msg_id:
+        session_meta["status"] = resolved_status
+        session_meta["payment_uploaded"] = True
+        save_dm_order_session(int(target_dm_msg_id), session_meta)
+        try:
+            dm_ch = bot.get_channel(int(target_dm_ch_id)) if target_dm_ch_id else user.dm_channel
+            if not dm_ch:
+                dm_ch = await user.create_dm()
+            if dm_ch:
+                orig_msg = await dm_ch.fetch_message(int(target_dm_msg_id))
+                guild_cfg = get_guild_config(int(session_meta["guild_id"])) if session_meta.get("guild_id") else None
+                has_foreigner = bool(guild_cfg and guild_cfg.get("foreigner_static_qris"))
+                updated_view = build_dm_order_view(
+                    has_foreigner=has_foreigner,
+                    selected_region=session_meta.get("selected_region"),
+                    show_upload_button=True,
+                    payment_uploaded=True,
+                )
+                await orig_msg.edit(view=updated_view)
+        except Exception as e:
+            log_debug("dm_order.edit_after_payment_error", error=str(e))
+
+    # Send notification to original server channel where /dm-order was invoked
+    origin_channel_id = session_meta.get("channel_id")
+    if origin_channel_id:
+        try:
+            origin_ch = bot.get_channel(int(origin_channel_id))
+            if not origin_ch:
+                origin_ch = await bot.fetch_channel(int(origin_channel_id))
+            if origin_ch and hasattr(origin_ch, "send"):
+                ch_embed = discord.Embed(
+                    title="✅ Payment DM Order Berhasil Diupload",
+                    description=(
+                        f"Bukti pembayaran dari {user.mention} (`{user.name}`) telah berhasil diupload.\n"
+                        f"{upload_response.get('message', '')}"
+                    ).strip(),
+                    color=0x2ECC71,
+                )
+                ch_embed.add_field(name="Order Number", value=resolved_order_num, inline=True)
+                ch_embed.add_field(name="Member", value=f"{user.mention} (`{user.id}`)", inline=True)
+                if session_meta.get("username"):
+                    ch_embed.add_field(name="Username Roblox", value=str(session_meta["username"]), inline=True)
+                if session_meta.get("amount"):
+                    ch_embed.add_field(name="Amount", value=f"{session_meta['amount']} Robux", inline=True)
+                ch_embed.add_field(name="Status", value=resolved_status, inline=True)
+                ch_embed.add_field(
+                    name="Image URL",
+                    value=f"[Klik untuk buka bukti bayar]({image_url})",
+                    inline=False,
+                )
+                ch_embed.set_image(url=image_url)
+                await origin_ch.send(embed=ch_embed)
+        except Exception as e:
+            log_debug("dm_order.notify_channel_error", channel_id=origin_channel_id, error=str(e))
+
+    return True, "OK", dm_confirm_embed
+
+
+async def handle_dm_payment_message(bot, message: discord.Message) -> bool:
+    if not message or message.guild is not None or not message.author or message.author.bot:
+        return False
+
+    image_url = get_message_image_url(message)
+    if not image_url:
+        return False
+
+    session_meta = get_pending_dm_payment_upload(message.author.id)
+    if not session_meta and message.reference and message.reference.message_id:
+        session_meta = get_dm_order_session(message.reference.message_id)
+        if session_meta:
+            session_meta = dict(session_meta)
+            session_meta["dm_message_id"] = message.reference.message_id
+            session_meta["dm_channel_id"] = message.channel.id
+
+    if not session_meta:
+        return False
+
+    ok, err_msg, confirm_embed = await process_dm_order_payment_upload(
+        bot,
+        user=message.author,
+        session_meta=session_meta,
+        image_url=image_url,
+        dm_message_id=session_meta.get("dm_message_id"),
+        dm_channel_id=message.channel.id,
+    )
+    if not ok:
+        await message.reply(f"❌ {err_msg}")
+        return True
+
+    await message.reply(embed=confirm_embed)
+    return True

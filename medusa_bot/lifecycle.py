@@ -3,6 +3,7 @@ from discord.ext import tasks
 from .config import get_autodelete_config, get_leaderboard_config, set_leaderboard_config
 from .helpers import (
     handle_autodelete_message,
+    handle_dm_payment_message,
     handle_raw_autodelete_message_edit,
     handle_sticky_on_message,
     post_or_edit_leaderboard,
@@ -36,6 +37,9 @@ def register_lifecycle(bot):
 
     @bot.listen("on_message")
     async def on_message_autodelete(message):
+        if message and message.guild is None:
+            await handle_dm_payment_message(bot, message)
+            return
         deleted = await handle_autodelete_message(message)
         if not deleted:
             await handle_sticky_on_message(bot, message)

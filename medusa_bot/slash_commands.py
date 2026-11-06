@@ -29,6 +29,7 @@ from .config import (
     get_sticky_config,
     has_qris_config,
     load_merchant_config,
+    save_dm_order_session,
     set_autodelete_config,
     set_guild_config,
     set_leaderboard_config,
@@ -38,13 +39,18 @@ from .config import (
     set_sticky_config,
 )
 from .helpers import (
+    DM_ORDER_QRIS_SELECT_ID,
+    DM_ORDER_UPLOAD_BUTTON_ID,
     MODAL_CALCULATE_ID,
+    MODAL_DM_PAYMENT_PREFIX,
     MODAL_ELIGIBLE_ID,
     STICKY_CALCULATE_BUTTON_ID,
     STICKY_ELIGIBLE_BUTTON_ID,
     apply_admin_fee,
     build_calc_result_embed,
     build_calc_usage_embed,
+    build_dm_order_embed,
+    build_dm_order_view,
     build_dynamic_qris_payload,
     build_halloween_profile_embed,
     build_leaderboard_embed,
@@ -53,6 +59,8 @@ from .helpers import (
     calculate_qris_total_with_admin_fee,
     delete_sticky_message_by_id,
     ensure_order_interaction_access,
+    extract_dm_order_metadata_from_message,
+    extract_modal_attachment,
     extract_modal_values,
     extract_ticket_identity,
     fetch_and_render_leaderboard,
@@ -68,15 +76,18 @@ from .helpers import (
     get_configured_roblox_group_ids,
     get_configured_roblox_groups,
     get_configured_reseller_groups,
+    get_dm_order_session,
     get_group_membership,
     get_message_image_url,
     get_order_roles,
+    get_pending_dm_payment_upload,
     get_roblox_group_names,
     get_roblox_user_avatar_url,
     log_debug,
     lookup_roblox_user,
     make_dynamic_qris,
     open_calculate_modal,
+    open_dm_payment_modal,
     open_eligible_modal,
     parse_calc_amount_with_currency,
     parse_calc_value,
@@ -84,11 +95,13 @@ from .helpers import (
     parse_robux_amount_input,
     place_external_order,
     place_marketplace_order,
+    process_dm_order_payment_upload,
     refresh_channel_stickies,
     resolve_text_channel,
     sanitize_roblox_username,
     send_interaction_message,
     send_sticky_message,
+    set_pending_dm_payment_upload,
     sync_autodelete_automod_rule,
     upload_marketplace_payment_proof,
     upload_payment_proof,
@@ -1004,6 +1017,7 @@ def register_slash_commands(bot):
         embed.add_field(name="/commision", value="Cek rincian komisi user Roblox. Contoh: `/commision username_roblox`", inline=False)
         embed.add_field(name="Apps > Giveaway Check", value="Klik kanan message pendaftaran lalu jalankan context menu ini untuk cek giveaway.", inline=False)
         embed.add_field(name="/order", value="Buat order manual via slash. Contoh: `/order username amount`", inline=False)
+        embed.add_field(name="/dm-order", value="Buat order manual lalu kirim pilihan QRIS & tombol upload bukti bayar ke DM member. Contoh: `/dm-order username amount member`", inline=False)
         embed.add_field(name="Apps > Upload Payment", value="Klik kanan message bukti bayar lalu isi `order_number` di popup modal.", inline=False)
         embed.add_field(name="/ratingsetup 🔒", value="Set atau hapus channel log review/rating.", inline=False)
         embed.add_field(name="/rating 🔒", value="Kirim pesan rating yang punya dropdown untuk ulasan bintang 1-5.", inline=False)
@@ -1553,6 +1567,132 @@ def register_slash_commands(bot):
             except Exception as e:
                 embed.add_field(name="QRIS", value=f"Gagal generate QRIS: `{e}`", inline=False)
         await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="dm-order", description="Buat external order Roblox dan kirim ke DM member beserta pilihan QRIS & upload bukti bayar")
+    @app_commands.describe(
+        username="Username Roblox yang mau dibuatkan order",
+        amount="Jumlah Robux, contoh: 125 atau 1k",
+        member="Pilih member tujuan DM (opsional, jika dikosongkan dikirim ke DM kamu)",
+    )
+    async def dm_order_slash(
+        interaction: discord.Interaction,
+        username: str,
+        amount: str,
+        member: Optional[discord.User] = None,
+    ):
+        if not await ensure_order_interaction_access(interaction):
+            return
+        username = sanitize_roblox_username(username) or username.strip()
+        if not username:
+            await interaction.response.send_message("❌ Username Roblox wajib diisi.", ephemeral=True)
+            return
+        parsed_amount = parse_robux_amount_input(amount)
+        if not parsed_amount or parsed_amount <= 0:
+            await interaction.response.send_message("❌ Nominal Robux tidak valid. Contoh: `125` atau `1k`.", ephemeral=True)
+            return
+        if parsed_amount < CALC_MIN_ROBUX:
+            await interaction.response.send_message(f"❌ Minimum order adalah **{CALC_MIN_ROBUX} Robux**.", ephemeral=True)
+            return
+
+        target_user = member or interaction.user
+        guild_config = get_guild_config(interaction.guild.id) if interaction.guild else None
+        if not guild_config or not guild_config.get("static_qris"):
+            await interaction.response.send_message(
+                "❌ Konfigurasi QRIS server belum diatur. Admin perlu menjalankan `/qrissetup` terlebih dahulu.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+        try:
+            order_response = await place_external_order(bot.http_session, username, parsed_amount)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Gagal membuat order: {e}")
+            return
+
+        if not order_response or not order_response.get("success"):
+            error_message = (
+                order_response["message"]
+                if order_response and order_response.get("message")
+                else "Gagal membuat external order."
+            )
+            await interaction.followup.send(f"❌ {error_message}")
+            return
+
+        order_data = dict(order_response.get("data") or {})
+        order_data.setdefault("username", username)
+        order_data.setdefault("amount", parsed_amount)
+        order_data.setdefault("message", order_response.get("message", "External order placed successfully."))
+
+        has_foreigner = bool(guild_config.get("foreigner_static_qris"))
+        dm_embed = build_dm_order_embed(order_data, selected_region=None, has_qris_image=False)
+        dm_view = build_dm_order_view(
+            has_foreigner=has_foreigner,
+            selected_region=None,
+            show_upload_button=False,
+        )
+
+        try:
+            dm_msg = await target_user.send(embed=dm_embed, view=dm_view)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"❌ Order `{order_data.get('order_number', '-')}` berhasil dibuat, tetapi gagal mengirim DM ke {target_user.mention} (`{target_user.name}`) karena DM dikunci/dimatikan."
+            )
+            return
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Order `{order_data.get('order_number', '-')}` berhasil dibuat, tetapi gagal mengirim DM ke {target_user.mention}: {e}"
+            )
+            return
+
+        session_payload = {
+            "order_number": order_data.get("order_number", "-"),
+            "username": order_data.get("username", username),
+            "amount": order_data.get("amount", parsed_amount),
+            "method": order_data.get("method", "-"),
+            "total_price": int(order_data.get("total_price", 0) or 0),
+            "status": order_data.get("status", "-"),
+            "order_url": (order_data.get("order_url") or "").strip().strip("`").strip(),
+            "avatar": (order_data.get("avatar") or "").strip().strip("`").strip(),
+            "message": order_data.get("message", "External order placed successfully."),
+            "guild_id": interaction.guild.id if interaction.guild else None,
+            "channel_id": interaction.channel.id if interaction.channel else None,
+            "member_id": target_user.id,
+            "admin_id": interaction.user.id,
+            "dm_message_id": dm_msg.id,
+            "dm_channel_id": dm_msg.channel.id,
+            "selected_region": None,
+            "payment_uploaded": False,
+        }
+        save_dm_order_session(dm_msg.id, session_payload)
+
+        total_price = int(order_data.get("total_price", 0) or 0)
+        confirm_embed = discord.Embed(
+            title="📨 DM Order Berhasil Dikirim",
+            description=f"Detail order dan pilihan QRIS telah dikirim ke DM {target_user.mention} (`{target_user.name}`).",
+            color=0x2ECC71,
+        )
+        confirm_embed.add_field(name="Target Member", value=f"{target_user.mention} (`{target_user.id}`)", inline=True)
+        confirm_embed.add_field(name="Order Number", value=str(order_data.get("order_number", "-")), inline=True)
+        confirm_embed.add_field(name="Username", value=str(order_data.get("username", username)), inline=True)
+        confirm_embed.add_field(name="Amount", value=f"{order_data.get('amount', parsed_amount)} Robux", inline=True)
+        confirm_embed.add_field(name="Method", value=str(order_data.get("method", "-")), inline=True)
+        confirm_embed.add_field(name="Total Price", value=format_rupiah(total_price), inline=True)
+        if total_price > 0:
+            confirm_embed.add_field(
+                name="QRIS Total",
+                value=format_rupiah(calculate_qris_total_with_admin_fee(total_price)),
+                inline=True,
+            )
+        confirm_embed.add_field(name="Status", value=str(order_data.get("status", "-")), inline=True)
+        order_url = session_payload["order_url"]
+        if order_url:
+            confirm_embed.add_field(name="Order URL", value=f"[Klik untuk buka order]({order_url})", inline=False)
+        avatar_url = session_payload["avatar"]
+        if avatar_url:
+            confirm_embed.set_thumbnail(url=avatar_url)
+
+        await interaction.followup.send(embed=confirm_embed)
 
     @bot.tree.command(name="payment", description="Upload bukti bayar order via attachment gambar")
     @app_commands.describe(order_number="Nomor order yang ingin ditandai paid", image="Attachment screenshot bukti pembayaran")
@@ -2636,8 +2776,171 @@ def register_slash_commands(bot):
                     await open_eligible_modal(bot, interaction)
                 elif custom_id == STICKY_CALCULATE_BUTTON_ID:
                     await open_calculate_modal(bot, interaction)
+                elif custom_id == DM_ORDER_QRIS_SELECT_ID:
+                    values = data.get("values") or []
+                    selected_region = values[0] if values else "indonesia"
+                    session_meta = extract_dm_order_metadata_from_message(interaction.message)
+                    guild_id = session_meta.get("guild_id")
+                    guild_config = get_guild_config(int(guild_id)) if guild_id else None
+                    if not guild_config or not guild_config.get("static_qris"):
+                        await interaction.response.send_message(
+                            "❌ Konfigurasi QRIS server tidak ditemukan.",
+                            ephemeral=True,
+                        )
+                        return
+
+                    if selected_region == "luar_negeri":
+                        target_payload = guild_config.get("foreigner_static_qris")
+                        if not target_payload:
+                            await interaction.response.send_message(
+                                "❌ QRIS Luar Negeri (Foreigner) belum dikonfigurasi di server ini. Silakan pilih region **Indonesia**.",
+                                ephemeral=True,
+                            )
+                            return
+                    else:
+                        target_payload = guild_config.get("static_qris")
+
+                    total_price = int(session_meta.get("total_price", 0) or 0)
+                    if total_price <= 0:
+                        await interaction.response.send_message(
+                            "❌ Nominal total harga order tidak valid untuk generate QRIS.",
+                            ephemeral=True,
+                        )
+                        return
+
+                    merchant_name = (
+                        guild_config.get("merchant_name")
+                        or parse_merchant_name_from_qris_payload(target_payload)
+                        or "Merchant"
+                    )
+
+                    await interaction.response.defer()
+                    try:
+                        qris_total = calculate_qris_total_with_admin_fee(total_price)
+                        qris_payload = build_dynamic_qris_payload(target_payload, total_price)
+                        if not qris_payload:
+                            raise ValueError("Format payload QRIS tidak valid.")
+                        qris_image = generate_qris_image(
+                            qris_payload,
+                            qris_total,
+                            merchant_name,
+                            original_amount=total_price,
+                        )
+                        qris_file = discord.File(qris_image, filename="order_qris.png")
+                    except Exception as e:
+                        await interaction.followup.send(f"❌ Gagal generate QRIS: {e}", ephemeral=True)
+                        return
+
+                    session_meta["selected_region"] = selected_region
+                    if interaction.message:
+                        session_meta["dm_message_id"] = interaction.message.id
+                        session_meta["dm_channel_id"] = interaction.message.channel.id
+                        save_dm_order_session(interaction.message.id, session_meta)
+
+                    has_foreigner = bool(guild_config.get("foreigner_static_qris"))
+                    payment_uploaded = bool(session_meta.get("payment_uploaded", False))
+                    updated_embed = build_dm_order_embed(
+                        session_meta,
+                        selected_region=selected_region,
+                        has_qris_image=True,
+                        payment_uploaded=payment_uploaded,
+                    )
+                    updated_view = build_dm_order_view(
+                        has_foreigner=has_foreigner,
+                        selected_region=selected_region,
+                        show_upload_button=True,
+                        payment_uploaded=payment_uploaded,
+                    )
+                    await interaction.edit_original_response(
+                        embed=updated_embed,
+                        attachments=[qris_file],
+                        view=updated_view,
+                    )
+
+                elif custom_id == DM_ORDER_UPLOAD_BUTTON_ID:
+                    session_meta = extract_dm_order_metadata_from_message(interaction.message)
+                    order_number = (session_meta.get("order_number") or "").strip()
+                    if not order_number or order_number == "-":
+                        await interaction.response.send_message(
+                            "❌ Nomor order tidak ditemukan pada pesan ini.",
+                            ephemeral=True,
+                        )
+                        return
+
+                    if interaction.message:
+                        session_meta["dm_message_id"] = interaction.message.id
+                        session_meta["dm_channel_id"] = interaction.message.channel.id
+                        save_dm_order_session(interaction.message.id, session_meta)
+
+                    set_pending_dm_payment_upload(interaction.user.id, session_meta)
+
+                    msg_id = interaction.message.id if interaction.message else 0
+                    modal_opened = await open_dm_payment_modal(bot, interaction, msg_id, order_number)
+                    if not modal_opened:
+                        await interaction.response.send_message(
+                            f"📸 Silakan kirimkan **gambar/screenshot bukti pembayaran** untuk Order `{order_number}` langsung di chat DM ini.",
+                            ephemeral=True,
+                        )
 
             elif interaction.type == discord.InteractionType.modal_submit:
+                if custom_id.startswith(f"{MODAL_DM_PAYMENT_PREFIX}:"):
+                    parts = custom_id.split(":", 2)
+                    dm_msg_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+                    session_meta = get_dm_order_session(dm_msg_id) if dm_msg_id else None
+                    if not session_meta:
+                        session_meta = get_pending_dm_payment_upload(interaction.user.id)
+                    if not session_meta and interaction.message:
+                        session_meta = extract_dm_order_metadata_from_message(interaction.message)
+                    if not session_meta:
+                        await interaction.response.send_message(
+                            "❌ Data sesi order tidak ditemukan. Silakan coba lagi.",
+                            ephemeral=True,
+                        )
+                        return
+
+                    att_data = extract_modal_attachment(data)
+                    if not att_data:
+                        await interaction.response.send_message(
+                            "❌ File gambar bukti pembayaran tidak ditemukan.",
+                            ephemeral=True,
+                        )
+                        return
+
+                    content_type = (att_data.get("content_type") or "").lower()
+                    filename = (att_data.get("filename") or "").lower()
+                    image_url = att_data.get("url") or att_data.get("proxy_url")
+                    if not image_url or (
+                        not content_type.startswith("image/")
+                        and not filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+                    ):
+                        await interaction.response.send_message(
+                            "❌ File yang diupload harus berupa gambar (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`).",
+                            ephemeral=True,
+                        )
+                        return
+
+                    log_debug(
+                        "payment.dm_modal_submit",
+                        author=getattr(interaction.user, "id", None),
+                        order_number=session_meta.get("order_number"),
+                        dm_message_id=dm_msg_id,
+                    )
+                    await interaction.response.defer(thinking=True)
+                    ok, err_msg, confirm_embed = await process_dm_order_payment_upload(
+                        bot,
+                        user=interaction.user,
+                        session_meta=session_meta,
+                        image_url=image_url,
+                        dm_message_id=dm_msg_id or session_meta.get("dm_message_id"),
+                        dm_channel_id=interaction.channel.id if interaction.channel else session_meta.get("dm_channel_id"),
+                    )
+                    if not ok:
+                        await interaction.followup.send(f"❌ {err_msg}")
+                        return
+
+                    await interaction.followup.send(embed=confirm_embed)
+                    return
+
                 if custom_id == MODAL_ELIGIBLE_ID:
                     values = extract_modal_values(data)
                     username_roblox = values.get("username_roblox", "")

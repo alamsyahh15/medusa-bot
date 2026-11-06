@@ -269,6 +269,40 @@ def delete_rating_session(message_id: int):
         save_config(config)
 
 
+def save_dm_order_session(message_id: int, data: dict):
+    config = load_config()
+    sessions = config.get("__dm_order_sessions__", {})
+    if not isinstance(sessions, dict):
+        sessions = {}
+    sessions[str(message_id)] = data
+    if len(sessions) > 200:
+        oldest_keys = list(sessions.keys())[:-200]
+        for k in oldest_keys:
+            sessions.pop(k, None)
+    config["__dm_order_sessions__"] = sessions
+    save_config(config)
+
+
+def get_dm_order_session(message_id: int) -> Optional[dict]:
+    if not message_id:
+        return None
+    sessions = load_config().get("__dm_order_sessions__", {})
+    if not isinstance(sessions, dict):
+        return None
+    return sessions.get(str(message_id))
+
+
+def delete_dm_order_session(message_id: int):
+    if not message_id:
+        return
+    config = load_config()
+    sessions = config.get("__dm_order_sessions__", {})
+    if isinstance(sessions, dict) and str(message_id) in sessions:
+        sessions.pop(str(message_id), None)
+        config["__dm_order_sessions__"] = sessions
+        save_config(config)
+
+
 def set_order_role_config(guild_id: int, role_ids):
     config = load_config()
     guild_key = str(guild_id)
