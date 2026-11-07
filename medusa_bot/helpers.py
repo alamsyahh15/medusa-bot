@@ -815,7 +815,12 @@ async def place_external_order(session: aiohttp.ClientSession, username: str, am
     return data
 
 
-async def upload_payment_proof(session: aiohttp.ClientSession, order_number: str, image_url: str) -> Optional[dict]:
+async def upload_payment_proof(
+    session: aiohttp.ClientSession,
+    order_number: str,
+    image_url: str,
+    status: Optional[str] = None,
+) -> Optional[dict]:
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -824,7 +829,15 @@ async def upload_payment_proof(session: aiohttp.ClientSession, order_number: str
         "order_number": order_number,
         "image_url": image_url,
     }
-    log_debug("upload_payment_proof.request", order_number=order_number, url=ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API, image_url=image_url)
+    if status:
+        payload["status"] = status
+    log_debug(
+        "upload_payment_proof.request",
+        order_number=order_number,
+        status=status,
+        url=ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API,
+        image_url=image_url,
+    )
     async with session.post(ROBLOX_EXTERNAL_UPLOAD_PAYMENT_API, headers=headers, json=payload) as resp:
         log_debug("upload_payment_proof.response", order_number=order_number, status=resp.status)
         try:
@@ -2105,7 +2118,7 @@ def build_dm_order_embed(
     amount = order_data.get("amount", 0)
     method = order_data.get("method", "-")
     total_price = int(order_data.get("total_price", 0) or 0)
-    status = "paid / done" if payment_uploaded else order_data.get("status", "-")
+    status = "paid" if payment_uploaded else order_data.get("status", "-")
     order_url = (order_data.get("order_url") or "").strip().strip("`").strip()
     avatar_url = (order_data.get("avatar") or "").strip().strip("`").strip()
 
@@ -2358,7 +2371,12 @@ async def process_dm_order_payment_upload(
         return False, "Order number tidak ditemukan pada pesan ini.", None
 
     try:
-        upload_response = await upload_payment_proof(bot.http_session, order_number, image_url)
+        upload_response = await upload_payment_proof(
+            bot.http_session,
+            order_number,
+            image_url,
+            status="paid",
+        )
     except Exception as e:
         return False, f"Gagal upload payment proof: {e}", None
 
@@ -2374,7 +2392,7 @@ async def process_dm_order_payment_upload(
 
     upload_data = upload_response.get("data") or {}
     resolved_order_num = upload_data.get("order_number", order_number)
-    resolved_status = upload_data.get("status", "done")
+    resolved_status = upload_data.get("status", "paid")
 
     dm_confirm_embed = discord.Embed(
         title="✅ Payment berhasil diupload",
