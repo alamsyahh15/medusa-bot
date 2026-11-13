@@ -44,7 +44,7 @@ ENABLE_MEMBERS_INTENT = os.getenv("ENABLE_MEMBERS_INTENT", "0") == "1"
 ENABLE_MESSAGE_CONTENT_INTENT = os.getenv("ENABLE_MESSAGE_CONTENT_INTENT", "1") == "1"
 CALC_RATES = {
     "group": 147000,
-    "gamepass": 132000,
+    "gamepass": 135000,
     "gig": 115000,
     "send": 152000,
 }
